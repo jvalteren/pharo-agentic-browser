@@ -404,6 +404,30 @@ AbTopicTest >> testRequestPackageExportTimesOutAndRejects [
 ]
 
 { #category : 'tests' }
+AbTopicTest >> testRequestPackageExportTimeoutAnnouncesMessageUpdate [
+	"AbChatPresenter relies on AbMessageAdded to know an approval was resolved and close its
+	confirm dialog; export-approval timeouts don't drive the state machine (unlike AI-permission
+	timeouts), so they must announce explicitly or the UI is left showing a stale prompt."
+
+	| topic option done timedOut announcedApprovalOptions |
+	topic := AbTopic new.
+	topic settings exportApprovalWaitTimeoutSeconds: 0.
+	announcedApprovalOptions := OrderedCollection new.
+	topic announcer
+		when: AbMessageAdded
+		do: [ :ann | announcedApprovalOptions add: ann message approvalOption ]
+		for: self.
+	done := Semaphore new.
+	[
+	option := topic requestPackageExport: 'Package ''Foo'' was modified. Export now?'.
+	done signal ] fork.
+	[ timedOut := done waitTimeoutMilliseconds: 200.
+	self deny: timedOut.
+	self assert: (announcedApprovalOptions includes: option) ]
+		ensure: [ topic announcer unsubscribe: self ]
+]
+
+{ #category : 'tests' }
 AbTopicTest >> testRequestPackageExportTimesOutUsingExportApprovalTimeoutOption [
 
 	| topic option done timedOut |
@@ -711,6 +735,22 @@ AbTopicTest >> testDoExecutePromptHandlesNetworkError [
 ]
 
 { #category : 'tests' }
+AbTopicTest >> testDoExecutePromptHandlesFileException [
+
+	| topic mockSession |
+	topic := AbTopic new.
+	topic stateMachine handleEvent: #promptSent.
+	mockSession := MockObject new.
+	mockSession on: #ensureConnected verify: [
+		(FileWriteError fileName: 'stdin') signal: 'pipe closed' ].
+	topic session: mockSession.
+	topic doExecutePrompt: 'hello' withResources: #().
+	self assert: topic status equals: #endTurn.
+	self assert: topic messages size equals: 1.
+	self assert: topic messages last sender equals: #system
+]
+
+{ #category : 'tests' }
 AbTopicTest >> testDoExecutePromptHandlesAcpRequestError [
 
 	| topic mockSession mockClient |
@@ -988,6 +1028,89 @@ AbTopicTest >> testCopyForNewSessionCopiesSettings [
 		equals: topic settings aiPermissionWaitTimeoutSeconds
 ]
 
+
+{ #category : 'tests' }
+AbTopicTest >> testHasGoalFalseByDefault [
+
+	self deny: AbTopic new hasGoal
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testHasGoalTrueAfterTopicGoalAccessed [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal description: 'Do the thing'.
+	self assert: topic hasGoal
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testHasGoalFalseWhenTopicGoalLazilyCreatedWithoutDescription [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal.
+	self deny: topic hasGoal
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testIsStalledFalseWithoutGoal [
+
+	| topic |
+	topic := AbTopic new.
+	topic stateMachine handleEvent: #promptSent.
+	topic stateMachine handleEvent: #turnEnded.
+	topic session client: MockObject new.
+	self deny: topic isStalled
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testIsStalledFalseWhenNotEndTurn [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal description: 'Do the thing'.
+	topic session client: MockObject new.
+	self deny: topic isStalled
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testIsStalledFalseWhenNotConnected [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal description: 'Do the thing'.
+	topic stateMachine handleEvent: #promptSent.
+	topic stateMachine handleEvent: #turnEnded.
+	self deny: topic isStalled
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testIsStalledFalseWhenWithinThreshold [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal description: 'Do the thing'.
+	topic stateMachine handleEvent: #promptSent.
+	topic stateMachine handleEvent: #turnEnded.
+	topic session client: MockObject new.
+	topic addSystemMessage: 'still working'.
+	self deny: topic isStalled
+]
+
+{ #category : 'tests' }
+AbTopicTest >> testIsStalledTrueWhenThresholdElapsedWithoutResultFile [
+
+	| topic |
+	topic := AbTopic new.
+	topic topicGoal description: 'Do the thing'.
+	topic settings goalHavingTopicStallThresholdSeconds: 0.
+	topic stateMachine handleEvent: #promptSent.
+	topic stateMachine handleEvent: #turnEnded.
+	topic session client: MockObject new.
+	topic addSystemMessage: 'still working'.
+	self assert: topic isStalled
+]
 
 { #category : 'tests' }
 AbTopicTest >> testCopyForNewSessionClearsSessionState [

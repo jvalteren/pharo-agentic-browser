@@ -34,6 +34,25 @@ AbTopicSessionTest >> testAnnouncerDelegatesToTopicAnnouncer [
 ]
 
 { #category : 'tests' }
+AbTopicSessionTest >> testIsConnectedFalseWhenNoClient [
+
+	| topic session |
+	topic := self newTopic.
+	session := topic session.
+	self deny: session isConnected
+]
+
+{ #category : 'tests' }
+AbTopicSessionTest >> testIsConnectedTrueWhenClientSet [
+
+	| topic session |
+	topic := self newTopic.
+	session := topic session.
+	session client: MockObject new.
+	self assert: session isConnected
+]
+
+{ #category : 'tests' }
 AbTopicSessionTest >> testClearSessionIdClearsSessionId [
 
 	| topic session |
@@ -79,6 +98,23 @@ AbTopicSessionTest >> testDisconnectKeepsSessionIdAndAvailableCommandsAndClearsO
 	self assert: session sessionId equals: 'session-1'.
 	self assert: session currentModel isNil.
 	self assert: session availableCommands size equals: 1
+]
+
+{ #category : 'tests' }
+AbTopicSessionTest >> testDisconnectClearsClientEvenWhenUnderlyingDisconnectFails [
+
+	| topic session mockClient |
+	topic := self newTopic.
+	session := AbTopicSession on: topic.
+	mockClient := MockObject new.
+	mockClient on: #disconnect verify: [ Error signal: 'pipe closed' ].
+	session client: mockClient.
+	session sessionId: 'session-1'.
+
+	session disconnect.
+
+	self assert: session client isNil.
+	self assert: session sessionId equals: 'session-1'
 ]
 
 { #category : 'tests' }

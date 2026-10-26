@@ -8,7 +8,7 @@ Responsibility:
 - I push real-time topic events (messageAdded, statusChanged, etc.) to the client via server-send.
 - I subscribe to ALL events for ALL topics at connect time and when new topics are added.
   All connected clients receive messageAdded, statusChanged, modelChanged, modeChanged,
-  commandsChanged, topicAdded, and topicRemoved for every topic (broadcast model).
+  commandsChanged, goalChanged, topicAdded, and topicRemoved for every topic (broadcast model).
 
 Public API and Key Messages:
 - AbTopicManagerRipple class>>roomName - 'agentic-browser' room identifier
@@ -16,15 +16,27 @@ Public API and Key Messages:
 - #topicManager: - Inject a test AbTopicManager (defaults to AbTopicManager default)
 - #webSocket: - Sets socket and activates AbTopicManager subscription (call after topicManager:)
 - #unregistered - Unsubscribes all announcer subscriptions (called by RpWebSocketBaseHandler on disconnect)
+- /crit/start - Request. Replies {ok: true} once validation passes, then starts crit review for a topic and
+  later pushes critReviewStarted or critReviewFailed to this client.
+- /workingDirectories/list - Lists immediate subfolders of the agentic-browser root (excluding
+  reserved 'topic-template' and 'screenshots') with creation/modification timestamps.
+- /topics/create - Accepts optional 'workingDirectory' (a plain relative folder name) and
+  'checkExistingDirectory' (default false) body keys. When 'checkExistingDirectory' is true and
+  the folder already exists, creation fails with a FOLDER_EXISTS-equivalent error (code 10009);
+  otherwise an existing folder is reused and a missing one is created and seeded from
+  the topic-template. Invalid/reserved folder names fail with code 10010.
 
 Internal Representation:
 - topicManager - The AbTopicManager used; defaults to AbTopicManager default
+- workingDirectoriesRootDirectory - Root directory for /workingDirectories/list; defaults to
+  AbSettings defaultAgenticBrowserRootDirectory (overridable for test isolation)
 "
 Class {
 	#name : 'AbTopicManagerRipple',
 	#superclass : 'RpRipple',
 	#instVars : [
-		'topicManager'
+		'topicManager',
+		'workingDirectoriesRootDirectory'
 	],
 	#category : 'AgenticBrowser-WebUI',
 	#package : 'AgenticBrowser-WebUI'
@@ -54,6 +66,18 @@ AbTopicManagerRipple >> topicManager [
 AbTopicManagerRipple >> topicManager: aManager [
 
 	topicManager := aManager
+]
+
+{ #category : 'accessing' }
+AbTopicManagerRipple >> workingDirectoriesRootDirectory [
+
+	^ workingDirectoriesRootDirectory ifNil: [ AbSettings defaultAgenticBrowserRootDirectory ]
+]
+
+{ #category : 'accessing' }
+AbTopicManagerRipple >> workingDirectoriesRootDirectory: aFileReference [
+
+	workingDirectoriesRootDirectory := aFileReference
 ]
 
 { #category : 'accessing' }
@@ -109,6 +133,10 @@ AbTopicManagerRipple >> subscribeToTopic: aTopic [
 	aTopic announcer
 		when: AbTopicAvailableCommandsChanged
 		do: [ :ann | self onCommandsChanged: ann ]
+		for: self.
+	aTopic announcer
+		when: AbTopicGoalChanged
+		do: [ :ann | self onGoalChanged: ann ]
 		for: self
 ]
 
@@ -130,40 +158,66 @@ AbTopicManagerRipple >> onTopicManagerLoaded: ann [
 	self subscribeToTopicManagerEvents
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
+AbTopicManagerRipple >> critReviewNotAvailableError: aReasonString [
+
+	^ (RpError application: 'Crit review not available: ' , aReasonString code: 10011) signal
+]
+
+{ #category : 'signaling' }
+AbTopicManagerRipple >> critReviewInvalidHostError: aHostString [
+
+	^ (RpError
+		   application: 'Invalid crit review host: ' , aHostString asString
+		   code: 10012) signal
+]
+
+{ #category : 'signaling' }
 AbTopicManagerRipple >> topicNotFoundError: aTopicId [
 
 	^ (RpError application: 'Topic not found: ' , aTopicId code: 10001) signal
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
 AbTopicManagerRipple >> topicBusyError: aTopicId [
 
 	^ (RpError application: 'Topic is busy: ' , aTopicId code: 10002) signal
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
 AbTopicManagerRipple >> noPendingApprovalError: aTopicId [
 
 	^ (RpError application: 'No pending approval for topic: ' , aTopicId code: 10003) signal
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
 AbTopicManagerRipple >> invalidOptionError: anOptionId [
 
 	^ (RpError application: 'Invalid optionId: ' , anOptionId printString code: 10004) signal
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
 AbTopicManagerRipple >> createTopicFailedError: aReason [
 
 	^ (RpError application: 'Failed to create topic: ' , aReason code: 10005) signal
 ]
 
-{ #category : 'private' }
+{ #category : 'signaling' }
 AbTopicManagerRipple >> saveFailedError: aReason [
 
 	^ (RpError application: 'Failed to save: ' , aReason code: 10006) signal
+]
+
+{ #category : 'signaling' }
+AbTopicManagerRipple >> workingDirectoryAlreadyExistsError: aDirName [
+
+	^ (RpError application: 'Working directory already exists: ' , aDirName code: 10009) signal
+]
+
+{ #category : 'signaling' }
+AbTopicManagerRipple >> invalidWorkingDirectoryNameError: aDirName [
+
+	^ (RpError application: 'Invalid working directory name: ' , aDirName code: 10010) signal
 ]
 
 { #category : 'json' }
@@ -180,6 +234,7 @@ AbTopicManagerRipple >> topicJson: aTopic [
 		  at: 'currentMode' put: (aTopic currentMode ifNil: [ '' ]);
 		  at: 'lastUpdated' put: (aTopic lastUpdated ifNil: [ '' ] ifNotNil: [ :d | d printString ]);
 		  at: 'workingDirectoryPath' put: aTopic workingDirectoryPath;
+		  at: 'critReviewAvailable' put: aTopic critDaemon isAvailable;
 		  yourself
 ]
 
@@ -243,6 +298,7 @@ AbTopicManagerRipple >> handleRequest: aMessage [
 	aMessage address = '/agents/list' ifTrue: [ ^ self handleListAgents: aMessage ].
 	aMessage address = '/topics/list' ifTrue: [ ^ self handleListTopics: aMessage ].
 	aMessage address = '/topics/create' ifTrue: [ ^ self handleCreateTopic: aMessage ].
+	aMessage address = '/workingDirectories/list' ifTrue: [ ^ self handleListWorkingDirectories: aMessage ].
 	aMessage address = '/topic/setTitle' ifTrue: [ ^ self handleRenameTopic: aMessage ].
 	aMessage address = '/topic/delete' ifTrue: [ ^ self handleDeleteTopic: aMessage ].
 	aMessage address = '/topic/setAgent' ifTrue: [ ^ self handleSetAgent: aMessage ].
@@ -254,6 +310,7 @@ AbTopicManagerRipple >> handleRequest: aMessage [
 	aMessage address = '/topic/getSettings' ifTrue: [ ^ self handleGetSettings: aMessage ].
 	aMessage address = '/topic/setSettings' ifTrue: [ ^ self handleSetSettings: aMessage ].
 	aMessage address = '/app/save' ifTrue: [ ^ self handleSaveApp: aMessage ].
+	aMessage address = '/crit/start' ifTrue: [ ^ self handleStartCritReview: aMessage ].
 	(RpError general: 'Unknown address: ' , aMessage address) signal
 ]
 
@@ -278,18 +335,93 @@ AbTopicManagerRipple >> handleListTopics: aMessage [
 { #category : 'request handling' }
 AbTopicManagerRipple >> handleCreateTopic: aMessage [
 
-	| body topic |
+	| body topic workingDirectoryPath |
 	body := aMessage body.
-	[ topic := AbTopic new.
-	topic title: (body at: 'title' ifAbsent: [ 'Untitled' ]).
-	(body at: 'agentArguments' ifAbsent: [ nil ]) ifNotNil: [ :args |
-		topic agentArguments: args asArray ].
-	self topicManager addTopic: topic ]
+	"resolveWorkingDirectoryPath:checkExistingDirectory: raises the specific 10009/10010 RpErrors
+	 and must stay outside the on: Error handler below, which rewraps any other creation failure
+	 as 10006."
+	workingDirectoryPath := (body at: 'workingDirectory' ifAbsent: [ nil ]) ifNotNil: [ :dirName |
+		self
+			resolveWorkingDirectoryPath: dirName
+			checkExistingDirectory: (body at: 'checkExistingDirectory' ifAbsent: [ false ]) ].
+	[ topic := self createTopicFrom: body workingDirectoryPath: workingDirectoryPath ]
 		on: Error
 		do: [ :e | self createTopicFailedError: e messageText ].
 	self webSocket
 		sendReply: (Dictionary new at: 'topicId' put: topic topicId; yourself)
 		for: aMessage
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> createTopicFrom: body workingDirectoryPath: workingDirectoryPath [
+
+	| topic |
+	topic := AbTopic new.
+	topic title: (body at: 'title' ifAbsent: [ 'Untitled' ]).
+	(body at: 'agentArguments' ifAbsent: [ nil ]) ifNotNil: [ :args |
+		topic agentArguments: args asArray ].
+	workingDirectoryPath ifNotNil: [
+		topic workingDirectoryPath: workingDirectoryPath fullName.
+		topic workingDirectory ensureExists ].
+	self topicManager addTopic: topic.
+	^ topic
+]
+
+{ #category : 'request handling' }
+AbTopicManagerRipple >> handleListWorkingDirectories: aMessage [
+
+	| root folders |
+	root := self workingDirectoriesRootDirectory.
+	folders := root exists
+		ifTrue: [
+			(root children select: [ :each | each isDirectory ])
+				reject: [ :each | self isReservedWorkingDirectoryName: each basename ] ]
+		ifFalse: [ #() ].
+	self webSocket
+		sendReply: (Dictionary new
+			at: 'workingDirectories' put: (folders collect: [ :each | self workingDirectoryJson: each ]) asArray;
+			yourself)
+		for: aMessage
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> resolveWorkingDirectoryPath: aDirName checkExistingDirectory: aBoolean [
+
+	| target |
+	self validateWorkingDirectoryName: aDirName.
+	target := self workingDirectoriesRootDirectory / aDirName.
+	(target fullName beginsWith: self workingDirectoriesRootDirectory fullName)
+		ifFalse: [ self invalidWorkingDirectoryNameError: aDirName ].
+	(target exists and: [ aBoolean ]) ifTrue: [ self workingDirectoryAlreadyExistsError: aDirName ].
+	^ target
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> validateWorkingDirectoryName: aDirName [
+
+	(aDirName trimBoth isEmpty
+		or: [ aDirName trimBoth = '.'
+			or: [ (#( '..' '/' '\' ) anySatisfy: [ :each | aDirName includesSubstring: each ])
+				or: [ aDirName asFileReference isAbsolute
+					or: [ self isReservedWorkingDirectoryName: aDirName ] ] ] ])
+		ifTrue: [ self invalidWorkingDirectoryNameError: aDirName ]
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> isReservedWorkingDirectoryName: aString [
+
+	^ { AbTopicTemplateDirectory reservedFolderName. AbScreenshotAttachment reservedFolderName }
+		  includes: aString
+]
+
+{ #category : 'json' }
+AbTopicManagerRipple >> workingDirectoryJson: aFileReference [
+
+	^ Dictionary new
+		  at: 'name' put: aFileReference basename;
+		  at: 'createdAt' put: aFileReference creationTime printString;
+		  at: 'modifiedAt' put: aFileReference modificationTime printString;
+		  yourself
 ]
 
 { #category : 'request handling' }
@@ -301,7 +433,7 @@ AbTopicManagerRipple >> handleRenameTopic: aMessage [
 	topic := self topicManager at: topicId.
 	topic ifNil: [ self topicNotFoundError: topicId ].
 	topic title: (body at: 'title').
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage.
+	self replyOkFor: aMessage.
 	self publishTopicsUpdated
 ]
 
@@ -314,7 +446,7 @@ AbTopicManagerRipple >> handleDeleteTopic: aMessage [
 	topic ifNil: [ self topicNotFoundError: topicId ].
 	topic isWorking ifTrue: [ self topicBusyError: topicId ].
 	self topicManager removeTopic: topic.
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage
+	self replyOkFor: aMessage
 ]
 
 { #category : 'request handling' }
@@ -324,13 +456,12 @@ AbTopicManagerRipple >> handleGetSettings: aMessage [
 	topicId := aMessage body at: 'topicId'.
 	topic := self topicManager at: topicId.
 	topic ifNil: [ self topicNotFoundError: topicId ].
-	settings := topic settings.
+	settings := Dictionary new.
+	self topicSettingKeys do: [ :key |
+		settings at: key put: (topic settings perform: key asSymbol) ].
 	self webSocket
 		sendReply: (Dictionary new
-			at: 'settings' put: (Dictionary new
-				at: 'useCommandOnGoalSet' put: settings useCommandOnGoalSet;
-				at: 'goalSetCommand' put: settings goalSetCommand;
-				yourself);
+			at: 'settings' put: settings;
 			yourself)
 		for: aMessage
 ]
@@ -344,11 +475,19 @@ AbTopicManagerRipple >> handleSetSettings: aMessage [
 	topic := self topicManager at: topicId.
 	topic ifNil: [ self topicNotFoundError: topicId ].
 	settings := body at: 'settings'.
-	(settings includesKey: 'useCommandOnGoalSet') ifTrue: [
-		topic settings useCommandOnGoalSet: (settings at: 'useCommandOnGoalSet') ].
-	(settings includesKey: 'goalSetCommand') ifTrue: [
-		topic settings goalSetCommand: (settings at: 'goalSetCommand') ].
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage
+	self topicSettingKeys do: [ :key |
+		settings at: key ifPresent: [ :value |
+			topic settings perform: key asSymbol asMutator with: value ] ].
+	self replyOkFor: aMessage
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> topicSettingKeys [
+	"Topic settings exposed to the web UI via /topic/getSettings and /topic/setSettings"
+
+	^ #( 'useCommandOnGoalSet' 'goalSetCommand' 'useDefaultMcpServers'
+	     'aiPermissionWaitTimeoutSeconds' 'aiPermissionTimeoutOption'
+	     'useStBuddySkillOnInitialPrompt' )
 ]
 
 { #category : 'request handling' }
@@ -361,7 +500,7 @@ AbTopicManagerRipple >> handleSetAgent: aMessage [
 	topic ifNil: [ self topicNotFoundError: topicId ].
 	topic isWorking ifTrue: [ self topicBusyError: topicId ].
 	topic agentArguments: (body at: 'agentArguments') asArray.
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage.
+	self replyOkFor: aMessage.
 	self publishTopicsUpdated
 ]
 
@@ -374,7 +513,7 @@ AbTopicManagerRipple >> handleSetGoal: aMessage [
 	topic := self topicManager at: topicId.
 	topic ifNil: [ self topicNotFoundError: topicId ].
 	topic goalDescription: (body at: 'goal').
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage.
+	self replyOkFor: aMessage.
 	self publishTopicsUpdated
 ]
 
@@ -410,7 +549,7 @@ AbTopicManagerRipple >> applyConfigOption: aBlock from: aMessage noConfigError: 
 	configOption ifNil: [
 		^ (RpError application: 'No ' , aLabel , ' config available for: ' , topicId code: anErrorCode) signal ].
 	topic setConfigOptionId: configOption id value: (body at: 'optionId').
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage
+	self replyOkFor: aMessage
 ]
 
 { #category : 'request handling' }
@@ -433,7 +572,7 @@ AbTopicManagerRipple >> handleSaveApp: aMessage [
 	[ self topicManager save ]
 		on: Error
 		do: [ :e | self saveFailedError: e messageText ].
-	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage
+	self replyOkFor: aMessage
 ]
 
 { #category : 'request handling' }
@@ -443,9 +582,7 @@ AbTopicManagerRipple >> handleSelectTopic: aMessage [
 	topicId := aMessage body at: 'topicId'.
 	topic := self topicManager at: topicId.
 	topic ifNil: [ self topicNotFoundError: topicId ].
-	self webSocket
-		sendReply: (Dictionary new at: 'ok' put: true; yourself)
-		for: aMessage.
+	self replyOkFor: aMessage.
 	self pushCurrentTopicViewState: topic
 ]
 
@@ -477,6 +614,53 @@ AbTopicManagerRipple >> handleSend: aMessage [
 	aMessage address = '/prompt/cancel' ifTrue: [ ^ self handleCancelPrompt: aMessage ].
 	aMessage address = '/approval/resolve' ifTrue: [ ^ self handleResolveApproval: aMessage ].
 	(RpError general: 'Unknown address: ' , aMessage address) signal
+]
+
+{ #category : 'request handling' }
+AbTopicManagerRipple >> handleStartCritReview: aMessage [
+
+	| body topicId topic host daemon |
+	body := aMessage body.
+	topicId := body at: 'topicId'.
+	topic := self topicManager at: topicId.
+	topic ifNil: [ self topicNotFoundError: topicId ].
+	host := body at: 'host'.
+	(AbCritDaemon isValidReviewHost: host) ifFalse: [
+		self critReviewInvalidHostError: host ].
+	daemon := topic critDaemon.
+	daemon refusalReasonOnStart ifNotNil: [ :reason | self critReviewNotAvailableError: reason ].
+	self replyOkFor: aMessage.
+	[ daemon
+		startReviewForHost: host
+		ifStarted: [ :url :port | self pushCritReviewStarted: topic port: port url: url ]
+		ifFailed: [ :reason | self pushCritReviewFailed: topic reason: reason ] ] fork
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> replyOkFor: aMessage [
+
+	self webSocket sendReply: (Dictionary new at: 'ok' put: true; yourself) for: aMessage
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> pushCritReviewStarted: aTopic port: anInteger url: aString [
+
+	self pushToClient: (Dictionary new
+		 at: 'event' put: 'critReviewStarted';
+		 at: 'topicId' put: aTopic topicId;
+		 at: 'port' put: anInteger;
+		 at: 'url' put: aString;
+		 yourself)
+]
+
+{ #category : 'private' }
+AbTopicManagerRipple >> pushCritReviewFailed: aTopic reason: aString [
+
+	self pushToClient: (Dictionary new
+		 at: 'event' put: 'critReviewFailed';
+		 at: 'topicId' put: aTopic topicId;
+		 at: 'reason' put: aString;
+		 yourself)
 ]
 
 { #category : 'send handling' }
@@ -627,6 +811,16 @@ AbTopicManagerRipple >> onModeChanged: ann [
 		 at: 'event' put: 'modeChanged';
 		 at: 'topicId' put: ann topic topicId;
 		 at: 'options' put: (self modeOptionsJson: ann topic);
+		 yourself)
+]
+
+{ #category : 'topic events' }
+AbTopicManagerRipple >> onGoalChanged: ann [
+
+	self pushToClient: (Dictionary new
+		 at: 'event' put: 'goalChanged';
+		 at: 'topicId' put: ann topic topicId;
+		 at: 'goal' put: (ann goal ifNil: [ '' ]);
 		 yourself)
 ]
 

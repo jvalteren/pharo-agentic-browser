@@ -21,14 +21,20 @@ BaselineOfAgenticBrowser >> baseline: spec [
 			package: 'AgenticBrowser-Core'
 			with: [ spec requires: #( 'ACP' 'SState' 'PharoSmalltalkInteropServer' ) ].
 		spec
+			package: 'AgenticBrowser-Crit'
+			with: [ spec requires: #( 'AgenticBrowser-Core' ) ].
+		spec
 			package: 'AgenticBrowser-Handler'
 			with: [ spec requires: #( 'AgenticBrowser-Core' 'ACP' ) ].
 		spec
 			package: 'AgenticBrowser-UI'
-			with: [ spec requires: #( 'AgenticBrowser-Handler' ) ].
+			with: [ spec requires: #( 'AgenticBrowser-Handler' 'AgenticBrowser-Crit' ) ].
 		spec
 			package: 'AgenticBrowser-Tests'
-			with: [ spec requires: #( 'AgenticBrowser-Core' 'AgenticBrowser-Handler' 'AgenticBrowser-UI' ) ].
+			with: [ spec requires: #( 'AgenticBrowser-Core' 'AgenticBrowser-Crit' 'AgenticBrowser-Handler' 'AgenticBrowser-UI' ) ].
+		spec
+			package: 'AgenticBrowser-Crit-Tests'
+			with: [ spec requires: #( 'AgenticBrowser-Crit' 'AgenticBrowser-Tests' ) ].
 		spec
 			package: 'AgenticBrowser-Scripting'
 			with: [ spec requires: #( 'AgenticBrowser-Core' ) ].
@@ -37,21 +43,21 @@ BaselineOfAgenticBrowser >> baseline: spec [
 			with: [ spec requires: #( 'AgenticBrowser-Scripting' 'AgenticBrowser-Tests' ) ].
 		spec
 			package: 'AgenticBrowser-WebUI'
-			with: [ spec requires: #( 'AgenticBrowser-Core' 'Ripple' ) ].
+			with: [ spec requires: #( 'AgenticBrowser-Core' 'AgenticBrowser-Crit' 'Ripple' ) ].
 		spec
 			package: 'AgenticBrowser-WebUI-Tests'
-			with: [ spec requires: #( 'AgenticBrowser-WebUI' 'AgenticBrowser-Tests' ) ].
+			with: [ spec requires: #( 'AgenticBrowser-WebUI' 'AgenticBrowser-Tests' 'AgenticBrowser-Crit-Tests' ) ].
 
 		"Groups"
 		spec
 			group: 'default'
-			with: #( 'AgenticBrowser-Core' 'AgenticBrowser-Handler' 'AgenticBrowser-UI' ).
+			with: #( 'AgenticBrowser-Core' 'AgenticBrowser-Crit' 'AgenticBrowser-Handler' 'AgenticBrowser-UI' ).
 		spec
 			group: 'all'
 			with: #( 'Scripting-Tests' 'WebUI-Tests' ).
 		spec
 			group: 'Tests'
-			with: #( 'default' 'AgenticBrowser-Tests' ).
+			with: #( 'default' 'AgenticBrowser-Tests' 'AgenticBrowser-Crit-Tests' ).
 		spec
 			group: 'WebUI'
 			with: #( 'default' 'AgenticBrowser-WebUI' ).

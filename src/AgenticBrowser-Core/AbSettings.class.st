@@ -5,7 +5,9 @@ Responsibility:
 - I store timeout durations and options for AI permission and package export approvals.
 - I cap how many characters of a file attachment's contents are embedded into a prompt via #maxAttachmentSize.
 - I control whether built-in Smalltalk MCP servers are merged into the agent's MCP config.
+- I control whether crit review is offered (#useCrit), the inclusive port range string (#critPortRange) from which a port is picked when crit starts, and whether crit accepts unauthenticated network access or binds to localhost only (#critAllowUnauthenticatedNetwork).
 - I persist the list of available coding agents shown in the New Topic dialog.
+- I control how often AbTopicManager runs its periodic topic checks via #monitoringIntervalSeconds. I still accept the old key stallMonitoringIntervalSeconds when loading, and save it under the new key.
 - I load from and save to ab-settings.json using STON/JSON serialization.
 - I delegate defaults to the global instance when I am a non-default (per-topic) copy.
 
@@ -56,9 +58,15 @@ AbSettings class >> defaultAgenticBrowserRootDirectory [
 ]
 
 { #category : 'instance creation' }
+AbSettings class >> copiedFrom: otherSettings [
+
+	^ self new initFrom: otherSettings
+]
+
+{ #category : 'instance creation' }
 AbSettings class >> defaultCopied [
 
-	^ self new initFrom: self default
+	^ self copiedFrom: self default
 ]
 
 { #category : 'persistence' }
@@ -117,8 +125,7 @@ AbSettings class >> saveTo: aFileReference [
 AbSettings >> saveFullTo: aFileReference [
 
 	aFileReference parent ensureCreateDirectory.
-	aFileReference ensureDelete.
-	aFileReference writeStreamDo: [ :stream |
+	aFileReference safeWriteStreamDo: [ :stream |
 		stream nextPutAll: (STONJSON toStringPretty: self asFullJsonDictionary) ]
 ]
 
@@ -262,6 +269,24 @@ AbSettings >> defaultUseStBuddySkillOnInitialPrompt [
 ]
 
 { #category : 'defaults' }
+AbSettings >> defaultUseCrit [
+	self isDefault ifFalse: [ ^ self class default defaultUseCrit ].
+	^ false
+]
+
+{ #category : 'defaults' }
+AbSettings >> defaultCritPortRange [
+	self isDefault ifFalse: [ ^ self class default defaultCritPortRange ].
+	^ '9080-9100'
+]
+
+{ #category : 'defaults' }
+AbSettings >> defaultCritAllowUnauthenticatedNetwork [
+	self isDefault ifFalse: [ ^ self class default defaultCritAllowUnauthenticatedNetwork ].
+	^ true
+]
+
+{ #category : 'defaults' }
 AbSettings >> defaultWatcherMessageThrottleSeconds [
 	self isDefault ifFalse: [ ^ self class default defaultWatcherMessageThrottleSeconds ].
 	^ 2
@@ -271,6 +296,18 @@ AbSettings >> defaultWatcherMessageThrottleSeconds [
 AbSettings >> defaultMaxAttachmentSize [
 	self isDefault ifFalse: [ ^ self class default defaultMaxAttachmentSize ].
 	^ 5 * 1024 * 1024
+]
+
+{ #category : 'defaults' }
+AbSettings >> defaultGoalHavingTopicStallThresholdSeconds [
+	self isDefault ifFalse: [ ^ self class default defaultGoalHavingTopicStallThresholdSeconds ].
+	^ 120
+]
+
+{ #category : 'defaults' }
+AbSettings >> defaultMonitoringIntervalSeconds [
+	self isDefault ifFalse: [ ^ self class default defaultMonitoringIntervalSeconds ].
+	^ 15
 ]
 
 { #category : 'accessing' }
@@ -387,6 +424,42 @@ AbSettings >> useStBuddySkillOnInitialPrompt: aBoolean [
 ]
 
 { #category : 'accessing' }
+AbSettings >> useCrit [
+
+	^ self at: #useCrit ifAbsent: [ self defaultUseCrit ]
+]
+
+{ #category : 'accessing' }
+AbSettings >> useCrit: aBoolean [
+
+	self at: #useCrit put: aBoolean
+]
+
+{ #category : 'accessing' }
+AbSettings >> critPortRange [
+
+	^ self at: #critPortRange ifAbsent: [ self defaultCritPortRange ]
+]
+
+{ #category : 'accessing' }
+AbSettings >> critPortRange: aString [
+
+	self at: #critPortRange put: aString
+]
+
+{ #category : 'accessing' }
+AbSettings >> critAllowUnauthenticatedNetwork [
+
+	^ self at: #critAllowUnauthenticatedNetwork ifAbsent: [ self defaultCritAllowUnauthenticatedNetwork ]
+]
+
+{ #category : 'accessing' }
+AbSettings >> critAllowUnauthenticatedNetwork: aBoolean [
+
+	self at: #critAllowUnauthenticatedNetwork put: aBoolean
+]
+
+{ #category : 'accessing' }
 AbSettings >> watcherMessageThrottleSeconds [
 
 	^ self
@@ -406,6 +479,20 @@ AbSettings >> watcherMessageThrottleDuration [
 	^ self watcherMessageThrottleSeconds seconds
 ]
 
+{ #category : 'accessing-convenient' }
+AbSettings >> critPortInterval [
+
+	| range parts low high |
+	range := self critPortRange.
+	(range isString and: [ range matchesRegex: '^[0-9]+-[0-9]+$' ]) ifFalse: [ ^ nil ].
+	parts := range splitOn: $-.
+	low := parts first asInteger.
+	high := parts second asInteger.
+	((low between: 1 and: 65535) and: [
+		 (high between: 1 and: 65535) and: [ low <= high ] ]) ifFalse: [ ^ nil ].
+	^ low to: high
+]
+
 { #category : 'accessing' }
 AbSettings >> maxAttachmentSize [
 
@@ -416,6 +503,41 @@ AbSettings >> maxAttachmentSize [
 AbSettings >> maxAttachmentSize: anInteger [
 
 	self at: #maxAttachmentSize put: anInteger
+]
+
+{ #category : 'accessing' }
+AbSettings >> goalHavingTopicStallThresholdSeconds [
+
+	^ self
+		  at: #goalHavingTopicStallThresholdSeconds
+		  ifAbsent: [ self defaultGoalHavingTopicStallThresholdSeconds ]
+]
+
+{ #category : 'accessing' }
+AbSettings >> goalHavingTopicStallThresholdSeconds: anInteger [
+
+	self at: #goalHavingTopicStallThresholdSeconds put: anInteger
+]
+
+{ #category : 'accessing' }
+AbSettings >> monitoringIntervalSeconds [
+
+	^ self
+		  at: #monitoringIntervalSeconds
+		  ifAbsent: [ self defaultMonitoringIntervalSeconds ]
+]
+
+{ #category : 'accessing' }
+AbSettings >> monitoringIntervalSeconds: anInteger [
+
+	self at: #monitoringIntervalSeconds put: anInteger
+]
+
+{ #category : 'accessing' }
+AbSettings >> stallMonitoringIntervalSeconds: anInteger [
+	"Kept so that an ab-settings.json saved before the rename to #monitoringIntervalSeconds keeps its value on load."
+
+	self monitoringIntervalSeconds: anInteger
 ]
 
 { #category : 'accessing-convenient' }

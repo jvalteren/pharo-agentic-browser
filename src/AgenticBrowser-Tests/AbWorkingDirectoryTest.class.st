@@ -317,3 +317,73 @@ AbWorkingDirectoryTest >> testExportClassNamedWritesClassFile [
 	self assert: (classFile contents includesSubstring: 'AbTopic') ]
 		ensure: [ workDir path deleteAll ]
 ]
+
+{ #category : 'tests' }
+AbWorkingDirectoryTest >> testExportClassNamedReplacesExistingLongerFileCompletely [
+
+	| topic workDir classFile |
+	self withTempDirectoryDo: [ :root |
+		topic := AbTopic new title: 'ab-test-export-overwrite'.
+		topic workingDirectoryPath: root fullName.
+		workDir := AbWorkingDirectory forTopic: topic.
+		classFile := workDir sourcePath / 'AgenticBrowser-Core' / 'AbTopic.class.st'.
+		self writeLongerFile: classFile marked: 'TRAILING-OLD-CONTENT'.
+		workDir exportClassNamed: 'AbTopic' in: 'AgenticBrowser-Core'.
+		self deny: (classFile contents includesSubstring: 'TRAILING-OLD-CONTENT').
+		self assert: (classFile contents includesSubstring: 'AbTopic') ]
+]
+
+{ #category : 'tests' }
+AbWorkingDirectoryTest >> testEnsureExistsAssignsNoPortWhenUseCritIsTrue [
+
+	| root topic |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	root := FileLocator temp / ('ab-wd-crit-' , UUID new asString36).
+	topic := self newTopic: 'crit-on'.
+	topic workingDirectoryPath: (root / 'on') fullName.
+	[
+		AbTopicManager forTest addTopic: topic.
+		topic workingDirectory ensureExists.
+		self assert: (AbCritConfigFile in: topic workingDirectory path) port isNil
+	] ensure: [
+		root exists ifTrue: [ root deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbWorkingDirectoryTest >> testEnsureExistsAssignsNoPortWhenUseCritIsFalse [
+
+	| root topic |
+	AbSettings initialize.
+	root := FileLocator temp / ('ab-wd-crit-' , UUID new asString36).
+	topic := self newTopic: 'crit-off'.
+	topic workingDirectoryPath: (root / 'off') fullName.
+	[
+		AbTopicManager forTest addTopic: topic.
+		topic workingDirectory ensureExists.
+		self deny: (topic workingDirectory path / '.crit.config.json') exists
+	] ensure: [
+		root exists ifTrue: [ root deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbWorkingDirectoryTest >> testEnsureExistsLeavesAnExistingDirectoryUnassigned [
+
+	| root topic dir |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	root := FileLocator temp / ('ab-wd-crit-' , UUID new asString36).
+	dir := root / 'existing'.
+	dir ensureCreateDirectory.
+	topic := self newTopic: 'crit-existing'.
+	topic workingDirectoryPath: dir fullName.
+	[
+		AbTopicManager forTest addTopic: topic.
+		topic workingDirectory ensureExists.
+		self deny: (dir / '.crit.config.json') exists
+	] ensure: [
+		root exists ifTrue: [ root deleteAll ].
+		AbSettings initialize ]
+]

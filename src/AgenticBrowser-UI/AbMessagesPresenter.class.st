@@ -10,7 +10,7 @@ Responsibility:
 Collaborators:
 - AbChatPresenter: It calls #addOrUpdateMessage:, #setMessages:, and #refreshMessages on me.
 - AbMessageRichTextBuilder: I call it to convert each AbMessage into formatted rich text.
-- MicTextPresenter: My internal read-only text presenter that displays the combined rich text.
+- MicrodownPresenter: My internal read-only text presenter that displays the combined rich text.
 
 Public API and Key Messages:
 - #addOrUpdateMessage: - Append a new message or redisplay an existing one (handles streaming chunks via identity check).
@@ -20,7 +20,7 @@ Public API and Key Messages:
 
 Internal Representation:
 - messages - OrderedCollection of all AbMessage instances for the current topic.
-- messageTextPresenter - MicTextPresenter rendering the combined rich text.
+- messageTextPresenter - MicrodownPresenter rendering the combined rich text.
 - hideThinkCheckBox - User control for filtering isThink messages.
 "
 Class {
@@ -67,9 +67,9 @@ AbMessagesPresenter >> defaultLayout [
 		  add: (SpBoxLayout newLeftToRight
 				   vAlignCenter;
 				   add: self newNullPresenter;
-				   add: self hideThinkCheckBox withConstraints: [ :c | c width: 110 ];
-				   yourself)
-		  withConstraints: [ :c | c height: 26 ];
+				   add: self hideThinkCheckBox
+					   withConstraints: [ :c | c width: 110; height: 26 ];
+				   yourself) expand: false;
 		  add: self messageTextPresenter;
 		  yourself
 ]
@@ -98,7 +98,7 @@ AbMessagesPresenter >> initializePresenters [
 
 	super initializePresenters.
 	messages := OrderedCollection new.
-	messageTextPresenter := self instantiate: MicTextPresenter.
+	messageTextPresenter := self instantiate: MicrodownPresenter.
 	messageTextPresenter text: '' asText.
 	hideThinkCheckBox := self newCheckBox.
 	hideThinkCheckBox label: 'Hide think'.

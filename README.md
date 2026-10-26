@@ -42,7 +42,7 @@ The core workflow:
 - **Mobile access** — the [Web UI](docs/web-ui.md) is a browser-based interface served over WebSocket, so you can check on and steer topics from a phone or tablet, not just a desktop Pharo image
 - **Multi-agent orchestration** — the [Scripting DSL](docs/scripting.md) coordinates multiple coding agents across sequential and parallel steps, with automatic result injection between them, instead of driving one agent session at a time
 - **Agent-agnostic** — works with any ACP-compatible agent (Claude Code, Gemini CLI, OpenCode, and others), so you aren't locked into a single vendor's CLI or IDE plugin
-- **Conversational human-in-the-loop** — approvals happen as plain-text chat replies, not modal dialogs, so you can steer a topic without breaking flow
+- **Conversational human-in-the-loop** — approvals happen as chat replies, not modal dialogs, so you can steer a topic without breaking flow
 
 ## Features
 
@@ -58,6 +58,7 @@ The core workflow:
 - **Topic template** — seed every new topic's working directory from `topic-template`, so coding-agent config (`CLAUDE.md`, `AGENTS.md`, `.claude`, `.opencode`, etc.) doesn't need to be set up per topic
 - **Multiple package prefixes** — track multiple package families (e.g. `#('ACP-*' 'BaselineOfACP')`) per topic
 - **Image change watching** — `AbTopicRelatedPackagesWatcher` monitors image changes, inserts system messages into chat, and asks for confirmation before synching packages
+- **Code review with crit** — review the agent's changes in the browser with [crit](https://github.com/tomasz-tomczyk/crit); review comments are fed back to the agent in the topic
 - **Web UI** — browser-based interface via WebSocket ([docs/web-ui.md](docs/web-ui.md))
 - **Scripting API** — headless DSL for coordinating multiple topics from code; supports sequential and parallel steps with automatic result injection ([docs/scripting.md](docs/scripting.md))
 
@@ -67,7 +68,8 @@ The core workflow:
 - [pharo-acp](https://github.com/mumez/pharo-acp)
 - [SState](https://github.com/mumez/SState)
 - [PharoSmalltalkInteropServer](https://github.com/mumez/PharoSmalltalkInteropServer)
-- At least one ACP-compatible agent installed (e.g. `claude-agent-acp`, `gemini --acp`)
+- At least one ACP-compatible agent installed (e.g. `claude-agent-acp`, `agent acp`)
+  - Whether usage is billed to your subscription plan or as pay-as-you-go API key usage depends on each agent's own authentication and billing scheme
 
 ## Installation
 
@@ -125,6 +127,18 @@ Metacello new
     load: 'all'.
 ```
 
+> **Note:** Loading `WebUI` (and therefore `'all'`) updates Zinc, which triggers a warning dialog during installation. To avoid getting stuck on the dialog (e.g., in headless environments), install as follows:
+
+```smalltalk
+[Metacello new
+    baseline: 'AgenticBrowser';
+    repository: 'github://mumez/pharo-agentic-browser:main/src';
+    onConflict: [ :e | e useIncoming ];
+    onUpgrade: [ :e | e useIncoming ];
+    ignoreImage;
+    load: 'all'] on: MCMergeOrLoadWarning do: [ :ex | ex load ] 
+```
+
 ## Usage
 
 Open the browser window:
@@ -139,8 +153,8 @@ AgenticBrowser open.
 4. Click **Create** — the topic appears in the left sidebar
 5. Right-click the topic and choose **Set Target Packages...** to configure which packages to watch
 6. Type a request and press **Send** — status changes to `❇️` (working)
-7. When the AI requests permission, the Send button changes to **Confirm** and Cancel to **Deny**, and status shows `?`
-8. Click **Confirm** to approve or **Deny** to reject
+7. When the AI requests permission, the Send button changes to **Allow** and Cancel to **Deny**, and status shows `?`
+8. Click **Allow** to approve or **Deny** to reject
 9. The AI resumes; when finished, status changes to `●` (endTurn)
 
 You can also right-click a topic to **Rename...**, **Delete**, or **Set Goal...**.
@@ -233,10 +247,10 @@ Place a `mcp.json` file in your AgenticBrowser root directory (default: `<imageD
 ```json
 {
   "mcpServers": {
-    "my-server": {
+    "extra-server": {
       "command": "uvx",
-      "args": ["my-server-package"],
-      "env": {"API_KEY": "value"}
+      "args": ["extra-server-package"],
+      "env": {"EX_SERVER_PORT": 12345}
     }
   }
 }
@@ -247,6 +261,20 @@ When `AbSettings >> useDefaultMcpServers` is `true` (the default), the built-in 
 ### Image Change Watching
 
 Watching starts automatically when a topic first connects (on the first **Send**).
+
+### Code Review with crit
+
+[crit](https://github.com/tomasz-tomczyk/crit) is a tool for reviewing changed files from a web browser. With the crit integration, you can start crit from AgenticBrowser through a menu (or a button in the Web UI) instead of running it yourself. When you finish a review, the agent picks up your comments and its responses flow into the topic's conversation in AgenticBrowser.
+
+crit review is disabled by default. To enable it, check **Use crit review** in the Settings dialog (or set `useCrit` to `true` in `ab-settings.json`), and make sure the `crit` command is on your `PATH`.
+
+When `useCrit` is `true` and the topic's working directory is a git repository, right-click the topic and choose **Review by crit** to review the agent's changes in crit.
+
+AgenticBrowser adds `on_finish_unresolved` / `on_finish_approved` hooks to the directory's `.crit.config.json`. When you press **Finish** for the first time after starting the review, the hook saves the result under `<imageDir>/agentic-browser/crit-results/`, and AgenticBrowser sends crit's review prompt to the topic once the agent's turn has ended (it checks every `monitoringIntervalSeconds`). The prompt ends with `crit --session <id>`, so from then on the agent receives later rounds from crit itself. An approval on the first Finish is shown as a system message instead.
+
+- crit asks you once to trust the project's hooks when you first press Finish.
+- If `.crit.config.json` already defines its own `on_finish_unresolved` or `on_finish_approved` hook, AgenticBrowser leaves it unchanged and does not deliver the first result.
+- The "first Finish" state is not saved with the image. After restarting the image, choose **Review by crit** again.
 
 ## Supported Agents
 
@@ -313,7 +341,7 @@ Each topic has an FSM with five states:
 
 ### Human-in-the-Loop Approval
 
-When the AI requests permission, `AbTopicHandler#requestPermission:` puts the UI into approval mode (Send button becomes **Confirm**, Cancel becomes **Deny**). When the user clicks a button, the UI returns to normal mode.
+When the AI requests permission, `AbTopicHandler#requestPermission:` puts the UI into approval mode (Send button becomes **Allow**, Cancel becomes **Deny**). When the user clicks a button, the UI returns to normal mode.
 
 ### Goal Setting (`AbTopicGoal`)
 
@@ -346,14 +374,14 @@ Settings are managed by `AbSettings` and persisted as `ab-settings.json` in the 
 
 ### Global Settings
 
-Open the Settings dialog from the **Settings…** menu in the browser window's menu bar. The dialog covers timeout values, timeout options, and MCP server preferences.
+Open the Settings dialog from the **Settings…** menu in the browser window's menu bar. The dialog covers timeout values, timeout options, MCP server preferences, and crit review settings.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `codingAgents` | (built-in list) | Array of `{name, command}` dicts shown in the New Topic dialog |
 | `useDefaultMcpServers` | `true` | Merge built-in Smalltalk MCP servers into `mcp.json` |
 | `aiPermissionWaitTimeoutSeconds` | `1800` | Seconds to wait for human response to an AI permission request |
-| `aiPermissionTimeoutOption` | `#reject_once` | Auto-response on timeout: `#allow_once`, `#allow_always`, or `#reject_once` |
+| `aiPermissionTimeoutOption` | `#reject_once` | Auto-response on timeout: `#allow_once` or `#reject_once` (Allow / Deny in the Settings dialog). `#allow_always` can be set only via scripting or the API, and only takes effect if the agent offers an "always allow" option |
 | `exportApprovalWaitTimeoutSeconds` | `30` | Seconds to wait for human approval of a package export |
 | `exportApprovalTimeoutOption` | `#reject_once` | Auto-response on export timeout |
 | `watcherMessageThrottleSeconds` | `2` | Minimum seconds between watcher system messages for the same package |
@@ -361,10 +389,16 @@ Open the Settings dialog from the **Settings…** menu in the browser window's m
 | `useStBuddySkillOnInitialPrompt` | `true` | Prefix the initial prompt with the `st-buddy` skill instruction |
 | `useCommandOnGoalSet` | `false` | Prefix the goal notification prompt with `goalSetCommand` |
 | `goalSetCommand` | `'/goal'` | Command prefix used when `useCommandOnGoalSet` is true |
+| `monitoringIntervalSeconds` | `15` | Seconds between the periodic topic checks (e.g. resuming stalled goal topics). Formerly `stallMonitoringIntervalSeconds`; an `ab-settings.json` with the old key is still read, and is saved with the new key |
+| `useCrit` | `false` | Offer **Review by crit** for topics whose working directory is a git repository (**Use crit review** in the Settings dialog) |
+| `critAllowUnauthenticatedNetwork` | `true` | Let crit accept unauthenticated access from other hosts in the LAN; when `false`, crit binds to localhost only (**Allow crit access within LAN** in the Settings dialog) |
+| `critPortRange` | `'9080-9100'` | Inclusive port range (`<low>-<high>`, 1-65535) from which a free port is picked when crit starts |
 
 ### Per-Topic Settings
 
 Each topic starts with a copy of the global settings. Right-click a topic in the sidebar and choose **Edit Settings...** to open the settings dialog for that topic alone.
+
+The crit settings are global only; they are hidden in the per-topic settings dialog because crit reads only the global settings.
 
 Per-topic settings are persisted with the topic via Fuel when `AbTopicManager save` is called.
 

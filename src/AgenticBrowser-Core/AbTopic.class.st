@@ -186,15 +186,6 @@ AbTopic >> agentArguments: anArray [
 ]
 
 { #category : 'private' }
-AbTopic >> announceGoalAchieved [
-
-	self announcer announce: (AbTopicGoalAchieved new
-			 topic: self;
-			 goal: self topicGoal;
-			 yourself)
-]
-
-{ #category : 'private' }
 AbTopic >> announceMessageAdded: aMessage [
 
 	self announcer announce: (AbMessageAdded new
@@ -259,8 +250,7 @@ AbTopic >> checkGoalAchievement [
 	self topicGoal ifNil: [ ^ false ].
 	self topicGoal checkAchievement ifFalse: [ ^ false ].
 	self stateMachine handleEvent: #goalReached.
-	self announceGoalAchieved.
-	self topicGoal fireWhenAchieved.
+	self topicGoal achieved.
 	^ true
 ]
 
@@ -285,6 +275,11 @@ AbTopic >> clearUpdatedExternalPackageNames [
 { #category : 'accessing' }
 AbTopic >> client [
 	^ self session client
+]
+
+{ #category : 'accessing' }
+AbTopic >> critDaemon [
+	^ self session critDaemon
 ]
 
 { #category : 'accessing' }
@@ -330,7 +325,7 @@ AbTopic >> ensureWorkingDirectoryForConnection [
 { #category : 'operations' }
 AbTopic >> goalDescription: aString [
 
-	self topicGoal description: aString.
+	self topicGoal updateDescription: aString.
 	self sendPrompt: self topicGoal notificationPrompt
 ]
 
@@ -397,6 +392,28 @@ AbTopic >> isEndTurn [
 AbTopic >> isGoalAchieved [
 
 	^ self status = #goalAchieved
+]
+
+{ #category : 'testing' }
+AbTopic >> hasGoal [
+	"Reads the raw instance variable, not `self topicGoal`, because that accessor lazily
+	creates an empty AbTopicGoal on first read, which would make this always answer true."
+
+	^ topicGoal notNil and: [
+		  topicGoal description notNil and: [
+			  topicGoal description notEmpty ] ]
+]
+
+{ #category : 'testing' }
+AbTopic >> isStalled [
+
+	self hasGoal ifFalse: [ ^ false ].
+	self isEndTurn ifFalse: [ ^ false ].
+	self session isConnected ifFalse: [ ^ false ].
+	self topicGoal resultFile exists ifTrue: [ ^ false ].
+	self lastUpdated ifNil: [ ^ false ].
+	^ (DateAndTime now - self lastUpdated) asSeconds
+		  >= self settings goalHavingTopicStallThresholdSeconds
 ]
 
 { #category : 'testing' }
@@ -515,6 +532,7 @@ AbTopic >> respondOnTimeout: aMessage approvalOption: anOptionSymbol logMessage:
 	aMessage approvalOption ifNotNil: [ ^ self ].
 	self logger debug: aString.
 	aMessage approvalOption: anOptionSymbol.
+	self announceMessageAdded: aMessage.
 	(aBoolean and: [ self isWaitingForHuman ]) ifTrue: [
 		self stateMachine handleEvent: #humanResponded ]
 ]
@@ -642,9 +660,15 @@ AbTopic >> acpRequestErrorTextFrom: anACPRequestError [
 
 { #category : 'private' }
 AbTopic >> doExecutePrompt: aString withResources: aCollection [
+	"FileWriteError is included alongside NetworkError because the ACP transport writes to the
+	agent subprocess over OS pipes; a dead subprocess (e.g. its pipes outlived a Pharo image
+	restart) surfaces as a FileWriteError, not a NetworkError, when the transport writes to it.
+	This block also does other file I/O (working directory setup, mcp.json loading) that can
+	raise other FileException subclasses; those are deliberately left uncaught here so a
+	missing/unwritable working directory or bad mcp.json isn't misreported as a network error."
 
 	[[ self trySendPrompt: aString withResources: aCollection ]
-		on: NetworkError
+		on: NetworkError, FileWriteError
 		do: [ :netEx | self handleNetworkError: netEx ] ]
 	on: ACPRequestError
 	do: [ :acpEx | self handleAcpRequestError: acpEx ]

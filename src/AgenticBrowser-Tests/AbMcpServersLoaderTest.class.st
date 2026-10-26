@@ -5,6 +5,20 @@ Class {
 	#package : 'AgenticBrowser-Tests'
 }
 
+{ #category : 'asserting' }
+AbMcpServersLoaderTest >> assertSisPort: aString in: anEnvCollection [
+
+	self assert: (anEnvCollection anySatisfy: [ :each |
+		| name value |
+		name := each isDictionary
+			        ifTrue: [ each at: 'name' ]
+			        ifFalse: [ each name ].
+		value := each isDictionary
+			         ifTrue: [ each at: 'value' ]
+			         ifFalse: [ each value ].
+		name = 'SIS_PORT' and: [ value = aString ] ])
+]
+
 { #category : 'tests' }
 AbMcpServersLoaderTest >> testLoadFromFileReturnsParsedConfigDict [
 
@@ -44,8 +58,8 @@ AbMcpServersLoaderTest >> testLoadResultIsJsonEncodableViaSessionParams [
 	serverDicts := (STONJSON fromString: json) at: 'mcpServers'.
 	interop := serverDicts detect: [ :s | (s at: 'name') = 'smalltalk-interop' ].
 	self assert: (interop at: 'command') equals: 'uvx'.
-	self assert: (interop at: 'args') equals: #( '--from' 'git+https://github.com/mumez/pharo-smalltalk-interop-mcp-server.git' 'pharo-smalltalk-interop-mcp-server' ).
-	self assert: ((interop at: 'env') anySatisfy: [ :e | (e at: 'name') = 'PHARO_SIS_PORT' and: [ (e at: 'value') = '8086' ] ]).
+	self assert: (interop at: 'args') equals: #( '--from' 'git+https://github.com/mumez/smalltalk-interop-mcp-server.git' 'smalltalk-interop-mcp-server' ).
+	self assertSisPort: SisSettings default port asString in: (interop at: 'env').
 	validator := serverDicts detect: [ :s | (s at: 'name') = 'smalltalk-validator' ].
 	self assert: (validator at: 'command') equals: 'uvx'.
 	self assert: (validator at: 'args') equals: #( '--from' 'git+https://github.com/mumez/smalltalk-validator-mcp-server.git@main' 'smalltalk-validator-mcp-server' ).
@@ -72,8 +86,24 @@ AbMcpServersLoaderTest >> testLoadSmalltalkInteropHasEnvVar [
 	loader useDefaultMcpServers: true.
 	result := loader load.
 	interopServer := result detect: [ :s | s name = 'smalltalk-interop' ].
-	self assert: (interopServer env anySatisfy: [ :e |
-		e name = 'PHARO_SIS_PORT' and: [ e value = '8086' ] ])
+	self assertSisPort: SisSettings default port asString in: interopServer env
+]
+
+{ #category : 'tests' }
+AbMcpServersLoaderTest >> testLoadSmalltalkInteropUsesSisSettingsPort [
+
+	| loader result interopServer previousPort port |
+	previousPort := SisSettings default port.
+	port := 9091.
+	[
+		SisSettings default port: port.
+		loader := AbMcpServersLoader new.
+		loader mcpJsonFile: (FileReference / 'nonexistent' / 'mcp.json').
+		loader useDefaultMcpServers: true.
+		result := loader load.
+		interopServer := result detect: [ :s | s name = 'smalltalk-interop' ].
+		self assertSisPort: port asString in: interopServer env
+	] ensure: [ SisSettings default port: previousPort ]
 ]
 
 { #category : 'tests' }

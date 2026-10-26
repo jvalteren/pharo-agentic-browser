@@ -1,9 +1,41 @@
 Class {
 	#name : 'AbTopicManagerTest',
 	#superclass : 'AbTestCase',
+	#instVars : [
+		'originalDefault'
+	],
 	#category : 'AgenticBrowser-Tests',
 	#package : 'AgenticBrowser-Tests'
 }
+
+{ #category : 'running' }
+AbTopicManagerTest >> setUp [
+
+	super setUp.
+	"Read the variable directly: AbTopicManager default would create a default when there is none."
+	self originalDefault: (AbTopicManager instVarNamed: 'default')
+]
+
+{ #category : 'running' }
+AbTopicManagerTest >> tearDown [
+	"Restore the default for tests that swap it. defaultLoaded: tears down the swapped-in manager and restarts the original."
+
+	(AbTopicManager instVarNamed: 'default') == self originalDefault ifFalse: [
+		AbTopicManager defaultLoaded: self originalDefault ].
+	super tearDown
+]
+
+{ #category : 'accessing' }
+AbTopicManagerTest >> originalDefault [
+
+	^ originalDefault
+]
+
+{ #category : 'accessing' }
+AbTopicManagerTest >> originalDefault: anAbTopicManager [
+
+	originalDefault := anAbTopicManager
+]
 
 { #category : 'tests' }
 AbTopicManagerTest >> testAddTopic [
@@ -83,6 +115,120 @@ AbTopicManagerTest >> testCleanupAllTopicsStopsWatchersAndUnsubscribesWorkingDir
 ]
 
 { #category : 'tests' }
+AbTopicManagerTest >> testResetStaleConnectionsClearsClientWithoutStoppingWatchers [
+
+	| manager topic session mockClient |
+	manager := AbTopicManager forTest.
+	topic := self newTopic: 'Reset stale connection'.
+	manager addTopic: topic.
+	topic startWatching.
+	session := topic session.
+	mockClient := MockObject new.
+	mockClient on: #disconnect verify: [ ].
+	session client: mockClient.
+	session sessionId: 'preserved-session'.
+	[
+	manager resetStaleConnections.
+	self assert: session client isNil.
+	self assert: session sessionId equals: 'preserved-session'.
+	self assert: topic relatedPackagesWatcher isWatching ]
+		ensure: [ topic stopWatching ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testResetStaleConnectionsIgnoresErrorsFromDeadConnections [
+
+	| manager topic session mockClient |
+	manager := AbTopicManager forTest.
+	topic := self newTopic: 'Dead pipe on resume'.
+	manager addTopic: topic.
+	session := topic session.
+	mockClient := MockObject new.
+	mockClient on: #disconnect verify: [ (FileWriteError fileName: 'stdin') signal: 'pipe closed' ].
+	session client: mockClient.
+
+	manager resetStaleConnections.
+
+	self assert: session client isNil
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testCleanupForImageQuitDisconnectsBelowChildWatcherPriority [
+
+	| manager topic mockClient disconnectPriority done |
+	manager := AbTopicManager forTest.
+	topic := self newTopic: 'Quit cleanup priority'.
+	manager addTopic: topic.
+	mockClient := MockObject new.
+	mockClient on: #disconnect verify: [ disconnectPriority := Processor activePriority ].
+	topic session client: mockClient.
+	done := Semaphore new.
+	"Mimic SessionManager>>snapshot:andQuit:, which runs shutDown: at timingPriority - 1"
+	[
+	manager cleanupForImageQuit.
+	done signal ] forkAt: Processor timingPriority - 1.
+	done wait.
+	self assert: disconnectPriority < Processor highIOPriority
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testStartUpTrueResetsStaleConnectionsOnDefaultManager [
+
+	| topic session mockClient |
+	AbTopicManager default: AbTopicManager new.
+	topic := self newTopic: 'Stale on resume'.
+	AbTopicManager default addTopic: topic.
+	session := topic session.
+	mockClient := MockObject new.
+	mockClient on: #disconnect verify: [ ].
+	session client: mockClient.
+	AbTopicManager startUp: true.
+	self assert: session client isNil
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testStartUpFalseDoesNotResetStaleConnections [
+
+	| topic session mockClient |
+	AbTopicManager default: AbTopicManager new.
+	topic := self newTopic: 'Not resuming'.
+	AbTopicManager default addTopic: topic.
+	session := topic session.
+	mockClient := MockObject new.
+	session client: mockClient.
+	AbTopicManager startUp: false.
+	self assert: session client == mockClient
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testShutDownDoesNothingWhenDefaultIsNil [
+
+	AbTopicManager default: nil.
+	AbTopicManager shutDown: true.
+	self assert: (AbTopicManager instVarNamed: 'default') isNil
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testShutDownSavesTopicManagerWhenDefaultExists [
+
+	| backupBytes file topic manager reloaded |
+	file := AbTopicManager defaultFileReference.
+	backupBytes := file exists ifTrue: [ file binaryReadStream upToEnd ] ifFalse: [ nil ].
+	manager := AbTopicManager new.
+	topic := self newTopic: 'Shutdown save topic'.
+	manager addTopic: topic.
+	AbTopicManager default: manager.
+	[
+	AbTopicManager shutDown: true.
+	reloaded := AbTopicManager loadFrom: file.
+	self assert: reloaded topics first title equals: topic title ]
+		ensure: [
+			backupBytes
+				ifNil: [ file ensureDelete ]
+				ifNotNil: [ file binaryWriteStreamDo: [ :s | s nextPutAll: backupBytes ] ] ]
+]
+
+{ #category : 'tests' }
 AbTopicManagerTest >> testDefaultFileReferenceIsInAgenticBrowserDirectory [
 
 	| file |
@@ -100,19 +246,15 @@ AbTopicManagerTest >> testDefaultReturnsSameInstance [
 { #category : 'tests' }
 AbTopicManagerTest >> testInitializeStopsActiveWatchersBeforeReset [
 
-	| topic watcher originalDefault |
-	originalDefault := AbTopicManager default.
+	| topic watcher |
 	AbTopicManager default: AbTopicManager new.
 	topic := self newTopic: 'Orphan during init'.
 	AbTopicManager default addTopic: topic.
 	topic startWatching.
 	watcher := topic relatedPackagesWatcher.
 	self assert: watcher isWatching.
-	[ AbTopicManager initialize.
-	  self deny: watcher isWatching ]
-		ensure: [
-			AbTopicManager default: originalDefault.
-			AbTopicManager forTest: nil ]
+	AbTopicManager initialize.
+	self deny: watcher isWatching
 ]
 
 { #category : 'tests' }
@@ -388,6 +530,99 @@ AbTopicManagerTest >> testClassAnnouncerReturnsAnnouncer [
 ]
 
 { #category : 'tests' }
+AbTopicManagerTest >> testClassAnnouncerCanBeReplaced [
+
+	| originalAnnouncer privateAnnouncer |
+	originalAnnouncer := AbTopicManager announcer.
+	privateAnnouncer := Announcer new.
+	[
+	AbTopicManager announcer: privateAnnouncer.
+	self assert: AbTopicManager announcer == privateAnnouncer ]
+		ensure: [ AbTopicManager announcer: originalAnnouncer ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testIsMonitoringFalseByDefault [
+
+	self deny: AbTopicManager forTest isMonitoring
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testStartMonitoringStartsBackgroundProcess [
+
+	| manager |
+	manager := AbTopicManager new.
+	[
+	manager startMonitoring.
+	self assert: manager isMonitoring ]
+		ensure: [ manager stopMonitoring ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testStopMonitoringTerminatesBackgroundProcess [
+
+	| manager |
+	manager := AbTopicManager new.
+	manager startMonitoring.
+	manager stopMonitoring.
+	self deny: manager isMonitoring
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testResumeStalledTopicsSendsResumePromptOnlyToStalledTopics [
+
+	| manager stalledTopic healthyTopic sentPrompts |
+	manager := AbTopicManager forTest.
+	sentPrompts := OrderedCollection new.
+
+	stalledTopic := AbMockTopicNoPromptSend new.
+	stalledTopic topicGoal description: 'Do the thing'.
+	stalledTopic settings goalHavingTopicStallThresholdSeconds: 0.
+	stalledTopic onSendBlock: [ :text :res | sentPrompts add: text ].
+	stalledTopic stateMachine handleEvent: #promptSent.
+	stalledTopic stateMachine handleEvent: #turnEnded.
+	stalledTopic addSystemMessage: 'still working'.
+
+	healthyTopic := AbMockTopicNoPromptSend new.
+	healthyTopic onSendBlock: [ :text :res | sentPrompts add: text ].
+
+	manager addTopic: stalledTopic.
+	manager addTopic: healthyTopic.
+
+	manager resumeStalledTopics.
+
+	self assert: sentPrompts size equals: 1.
+	self assert: sentPrompts first equals: stalledTopic topicGoal resumePrompt
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testStartUpTrueStartsMonitoringAndWatching [
+
+	| topic |
+	AbTopicManager default: AbTopicManager new.
+	topic := self newTopic: 'Resume topic'.
+	AbTopicManager default addTopic: topic.
+	AbTopicManager startUp: true.
+	self assert: AbTopicManager default isMonitoring.
+	self assert: topic relatedPackagesWatcher isWatching
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testDefaultLoadedStopsPreviousMonitoring [
+
+	| oldManager newManager |
+	oldManager := AbTopicManager new.
+	oldManager startMonitoring.
+	self assert: oldManager isMonitoring.
+
+	newManager := AbTopicManager new.
+	AbTopicManager default: oldManager.
+	AbTopicManager defaultLoaded: newManager.
+	self deny: oldManager isMonitoring.
+	self assert: newManager isMonitoring
+]
+
+{ #category : 'tests' }
 AbTopicManagerTest >> testAbTopicManagerLoadedConstructor [
 
 	| manager announcement |
@@ -398,18 +633,32 @@ AbTopicManagerTest >> testAbTopicManagerLoadedConstructor [
 ]
 
 { #category : 'tests' }
-AbTopicManagerTest >> testLoadAnnouncesAbTopicManagerLoaded [
+AbTopicManagerTest >> testDefaultLoadedSetsDefaultAndAnnouncesAbTopicManagerLoaded [
 
-	| received newManager |
+	| newManager received |
+	newManager := AbTopicManager new.
+	"defaultLoaded: tears down the current default, so swap in a throwaway one to keep the original's topics connected."
+	AbTopicManager default: AbTopicManager new.
+	[
+	AbTopicManager announcer when: AbTopicManagerLoaded do: [ :ann | received := ann topicManager ] for: self.
+	AbTopicManager defaultLoaded: newManager.
+	self assert: AbTopicManager default == newManager.
+	self assert: received == newManager ]
+		ensure: [ AbTopicManager announcer unsubscribe: self ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerTest >> testLoadAnnouncesAbTopicManagerLoaded [
+	"Use a private announcer: announcing on AbTopicManager announcer would switch open topic lists to newManager."
+
+	| received newManager announcer |
 	received := nil.
 	newManager := AbTopicManager new.
-	AbTopicManager announcer
+	announcer := Announcer new.
+	announcer
 		when: AbTopicManagerLoaded
 		do: [ :ann | received := ann topicManager ]
 		for: self.
-	[
-	AbTopicManager announcer
-		announce: (AbTopicManagerLoaded topicManager: newManager) ]
-		ensure: [ AbTopicManager announcer unsubscribe: self ].
+	announcer announce: (AbTopicManagerLoaded topicManager: newManager).
 	self assert: received == newManager
 ]

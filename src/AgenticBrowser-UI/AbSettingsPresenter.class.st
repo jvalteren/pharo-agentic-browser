@@ -2,9 +2,10 @@
 I am a settings editor that presents and saves an AbSettings instance.
 
 Responsibility:
-- I display all editable AbSettings fields: watcher throttle, AI permission timeout, export approval timeout, their timeout-option drop-lists, MCP server checkbox, and goal-settings command fields.
+- I display all editable AbSettings fields: watcher throttle, AI permission timeout, export approval timeout, their timeout-option drop-lists, MCP server checkbox, goal-settings command fields, the crit review checkbox, the crit LAN access checkbox, and the crit port range field.
+- I validate the crit port range on save (reusing AbSettings>>critPortInterval); when it is invalid I write nothing, skip the saveAction, keep the window open, and show the expected format in a validation message label.
 - I support two entry points: editing the global default settings (via #openOnDefault) and editing a per-topic copy (via #openOnTopic:).
-- On save I invoke a configurable saveAction block; for the global path this writes the fuel file, for the topic path it replaces the topic's in-memory settings only.
+- On save I invoke a configurable saveAction block; for the global path this writes ab-settings.json, for the topic path it replaces the topic's in-memory settings only.
 
 Collaborators:
 - AbSettings: I am the SpPresenterWithModel model; I read initial values from it and write back on save.
@@ -12,13 +13,16 @@ Collaborators:
 - AbTopicListPresenter: It opens me for per-topic settings via the ""Edit Settings..."" context menu item.
 
 Public API and Key Messages:
-- AbSettingsPresenter class>>openOnDefault - Open editor for the global AbSettings singleton; saves to fuel on confirm.
-- AbSettingsPresenter class>>openOnTopic: - Open editor for a topic's settings copy; replaces the topic's settings on confirm without a global save.
+- AbSettingsPresenter class>>openOnDefault - Open editor for the global AbSettings singleton; saves to ab-settings.json on confirm.
+- AbSettingsPresenter class>>openOnTopic: - Open editor for a topic's settings copy; replaces the topic's settings on confirm without a global save. The crit settings are hidden because crit reads only the global settings.
 - #saveAction: - Inject a custom save block (receives the edited AbSettings as argument).
+- #showsCritSettings: - Show or hide the crit review checkbox, network access checkbox, port range field, and validation message (shown by default).
 
 Internal Representation:
 - saveAction - Block called with the edited AbSettings on save; defaults to a no-op.
 - All field/widget instVars hold the Spec2 presenters for each individual setting.
+- validationMessageLabel - Label that is empty normally and explains the expected crit port range format after an invalid save attempt.
+- showsCritSettings - Whether the crit settings rows are laid out and the crit port range is checked on save.
 "
 Class {
 	#name : 'AbSettingsPresenter',
@@ -34,6 +38,11 @@ Class {
 		'useCommandOnGoalSetCheckbox',
 		'goalSetCommandField',
 		'useStBuddySkillOnInitialPromptCheckbox',
+		'useCritCheckbox',
+		'critAllowUnauthenticatedNetworkCheckbox',
+		'critPortRangeField',
+		'validationMessageLabel',
+		'showsCritSettings',
 		'saveButton',
 		'cancelButton'
 	],
@@ -60,6 +69,7 @@ AbSettingsPresenter class >> openOnTopic: aTopic [
 	presenter := self on: settingsCopy.
 	presenter saveAction: [ :editedSettings |
 		aTopic settings: editedSettings ].
+	presenter showsCritSettings: false.
 	presenter open.
 	^ presenter
 ]
@@ -72,6 +82,7 @@ AbSettingsPresenter >> settings [
 { #category : 'initialization' }
 AbSettingsPresenter >> initialize [
 	saveAction := [].
+	showsCritSettings := true.
 	super initialize
 ]
 
@@ -131,6 +142,36 @@ AbSettingsPresenter >> goalSetCommandField [
 ]
 
 { #category : 'accessing' }
+AbSettingsPresenter >> useCritCheckbox [
+	^ useCritCheckbox
+]
+
+{ #category : 'accessing' }
+AbSettingsPresenter >> critAllowUnauthenticatedNetworkCheckbox [
+	^ critAllowUnauthenticatedNetworkCheckbox
+]
+
+{ #category : 'accessing' }
+AbSettingsPresenter >> critPortRangeField [
+	^ critPortRangeField
+]
+
+{ #category : 'accessing' }
+AbSettingsPresenter >> validationMessageLabel [
+	^ validationMessageLabel
+]
+
+{ #category : 'accessing' }
+AbSettingsPresenter >> showsCritSettings [
+	^ showsCritSettings
+]
+
+{ #category : 'accessing' }
+AbSettingsPresenter >> showsCritSettings: aBoolean [
+	showsCritSettings := aBoolean
+]
+
+{ #category : 'accessing' }
 AbSettingsPresenter >> saveButton [
 	^ saveButton
 ]
@@ -142,6 +183,8 @@ AbSettingsPresenter >> cancelButton [
 
 { #category : 'actions' }
 AbSettingsPresenter >> saveSettings [
+	"Answer whether the settings were written; an invalid crit port range writes nothing and shows the expected format instead."
+	self validateCritPortRange ifFalse: [ ^ false ].
 	self settings watcherMessageThrottleSeconds: watcherThrottleField text asInteger.
 	self settings aiPermissionWaitTimeoutSeconds: aiTimeoutField text asInteger.
 	self settings exportApprovalWaitTimeoutSeconds: exportTimeoutField text asInteger.
@@ -151,7 +194,28 @@ AbSettingsPresenter >> saveSettings [
 	self settings useCommandOnGoalSet: useCommandOnGoalSetCheckbox state.
 	self settings goalSetCommand: goalSetCommandField text.
 	self settings useStBuddySkillOnInitialPrompt: useStBuddySkillOnInitialPromptCheckbox state.
-	self saveAction cull: self settings
+	self settings useCrit: self useCritCheckbox state.
+	self settings critAllowUnauthenticatedNetwork: self critAllowUnauthenticatedNetworkCheckbox state.
+	self settings critPortRange: self critPortRangeField text.
+	self saveAction cull: self settings.
+	^ true
+]
+
+{ #category : 'private' }
+AbSettingsPresenter >> validateCritPortRange [
+	"Answer whether the crit port range can be saved, showing the expected format in the validation message when it cannot. The range is not checked when the crit settings are hidden."
+	(self showsCritSettings and: [ self isCritPortRangeValid not ]) ifTrue: [
+		self validationMessageLabel label: 'Crit port range must look like ' , self settings defaultCritPortRange , ' (1-65535).'.
+		^ false ].
+	self validationMessageLabel label: ''.
+	^ true
+]
+
+{ #category : 'private' }
+AbSettingsPresenter >> isCritPortRangeValid [
+	^ (AbSettings new
+		   critPortRange: self critPortRangeField text;
+		   critPortInterval) notNil
 ]
 
 { #category : 'private' }
@@ -214,31 +278,69 @@ AbSettingsPresenter >> initializePresenters [
 	useStBuddySkillOnInitialPromptCheckbox label: 'Use st-buddy skill on initial prompt'.
 	useStBuddySkillOnInitialPromptCheckbox state: self settings useStBuddySkillOnInitialPrompt.
 
+	self initializeCritSettingsPresenters.
+
 	saveButton := self newButton.
 	saveButton label: 'Save'.
-	saveButton action: [ self saveSettings. self window close ].
+	saveButton action: [ self saveSettings ifTrue: [ self window close ] ].
 
 	cancelButton := self newButton.
 	cancelButton label: 'Cancel'.
 	cancelButton action: [ self window close ]
 ]
 
+{ #category : 'initialization' }
+AbSettingsPresenter >> initializeCritSettingsPresenters [
+	useCritCheckbox := self newCheckBox.
+	useCritCheckbox label: 'Use crit review'.
+	useCritCheckbox state: self settings useCrit.
+
+	critAllowUnauthenticatedNetworkCheckbox := self newCheckBox.
+	critAllowUnauthenticatedNetworkCheckbox label: 'Allow crit access within LAN (other than localhost)'.
+	critAllowUnauthenticatedNetworkCheckbox state: self settings critAllowUnauthenticatedNetwork.
+
+	critPortRangeField := self newTextInput.
+	critPortRangeField text: self settings critPortRange.
+
+	validationMessageLabel := self newLabel.
+	validationMessageLabel label: ''
+]
+
 { #category : 'layout' }
 AbSettingsPresenter >> defaultLayout [
-	^ SpBoxLayout newTopToBottom
+	| layout |
+	layout := SpBoxLayout newTopToBottom
 		borderWidth: 10;
 		spacing: 6;
-		add: (self labeledRow: 'Watcher throttle (seconds):' field: watcherThrottleField);
-		add: (self labeledRow: 'AI permission timeout (seconds):' field: aiTimeoutField);
-		add: (self labeledRow: 'AI timeout option:' field: aiTimeoutOptionDropList);
-		add: (self labeledRow: 'Export timeout (seconds):' field: exportTimeoutField);
-		add: (self labeledRow: 'Export timeout option:' field: exportTimeoutOptionDropList);
-		add: useDefaultMcpServersCheckbox withConstraints: [ :c | c height: 28 ];
-		add: useCommandOnGoalSetCheckbox withConstraints: [ :c | c height: 28 ];
-		add: (self labeledRow: 'Goal settings command:' field: goalSetCommandField);
-		add: useStBuddySkillOnInitialPromptCheckbox withConstraints: [ :c | c height: 28 ];
+		yourself.
+	self addGeneralSettingsTo: layout.
+	self showsCritSettings ifTrue: [ self addCritSettingsTo: layout ].
+	^ layout
 		addLast: self actionButtonsLayout withConstraints: [ :c | c height: 34 ];
 		yourself
+]
+
+{ #category : 'layout' }
+AbSettingsPresenter >> addGeneralSettingsTo: aBoxLayout [
+	aBoxLayout
+		add: (self labeledRow: 'Watcher throttle (seconds):' field: self watcherThrottleField);
+		add: (self labeledRow: 'AI permission timeout (seconds):' field: self aiTimeoutField);
+		add: (self labeledRow: 'AI timeout option:' field: self aiTimeoutOptionDropList);
+		add: (self labeledRow: 'Export timeout (seconds):' field: self exportTimeoutField);
+		add: (self labeledRow: 'Export timeout option:' field: self exportTimeoutOptionDropList);
+		add: self useDefaultMcpServersCheckbox withConstraints: [ :c | c height: 28 ];
+		add: self useCommandOnGoalSetCheckbox withConstraints: [ :c | c height: 28 ];
+		add: (self labeledRow: 'Goal settings command:' field: self goalSetCommandField);
+		add: self useStBuddySkillOnInitialPromptCheckbox withConstraints: [ :c | c height: 28 ]
+]
+
+{ #category : 'layout' }
+AbSettingsPresenter >> addCritSettingsTo: aBoxLayout [
+	aBoxLayout
+		add: self useCritCheckbox withConstraints: [ :c | c height: 28 ];
+		add: self critAllowUnauthenticatedNetworkCheckbox withConstraints: [ :c | c height: 28 ];
+		add: (self labeledRow: 'Crit port range:' field: self critPortRangeField);
+		add: self validationMessageLabel withConstraints: [ :c | c height: 20 ]
 ]
 
 { #category : 'layout' }
@@ -266,5 +368,5 @@ AbSettingsPresenter >> initializeWindow: aWindowPresenter [
 	super initializeWindow: aWindowPresenter.
 	aWindowPresenter
 		title: 'Settings';
-		initialExtent: 420 @ 420
+		initialExtent: 420 @ 550
 ]

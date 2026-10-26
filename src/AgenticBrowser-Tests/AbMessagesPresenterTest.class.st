@@ -75,9 +75,29 @@ AbMessagesPresenterTest >> testHideThinkEnabledByDefaultIsFalse [
 ]
 
 { #category : 'tests' }
-AbMessagesPresenterTest >> testInitializeUsesMicTextPresenter [
+AbMessagesPresenterTest >> testDoubleClickOnMessageTextDoesNotRaiseError [
+	"MicTextPresenter's adapter lacked #interactionModel, so double-clicking raised MessageNotUnderstood."
 
-	self assert: presenter messageTextPresenter class equals: MicTextPresenter
+	| window textArea doubleClickEvent |
+	presenter addOrUpdateMessage: (AbMessage sender: #ai text: 'Hello world').
+	window := presenter open.
+	[
+		textArea := presenter messageTextPresenter adapter widget textArea.
+		doubleClickEvent := MouseButtonEvent new
+			setType: #mouseDown
+			position: textArea topLeft + (10 @ 5)
+			which: MouseButtonEvent redButton
+			buttons: MouseButtonEvent redButton
+			hand: self currentWorld activeHand
+			stamp: Time millisecondClockValue.
+		self shouldnt: [ textArea doubleClick: doubleClickEvent ] raise: Error
+	] ensure: [ window close ]
+]
+
+{ #category : 'tests' }
+AbMessagesPresenterTest >> testInitializeUsesMicrodownPresenter [
+
+	self assert: presenter messageTextPresenter class equals: MicrodownPresenter
 ]
 
 { #category : 'tests' }

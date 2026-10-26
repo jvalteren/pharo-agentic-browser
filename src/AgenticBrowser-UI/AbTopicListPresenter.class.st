@@ -4,7 +4,7 @@ I render the left-sidebar topic list and dispatch all topic-level operations via
 Responsibility:
 - I display all registered AbTopics as a sorted list with status icons and agent-name labels.
 - I support two sort modes: alphabetical by title and descending by last-updated timestamp.
-- I provide a context menu with operations: Rename, Delete, Inspect, Change Agent, Set Goal, Set Working Directory, Clear Session ID, Set Target Packages, Apply Updated External Packages, and Edit Settings.
+- I provide a context menu with operations: Rename, Delete, Inspect, Change Agent, Set Goal, Set Working Directory, Clear Session ID, Set Target Packages, Apply Updated External Packages, Edit Settings, and Review by crit when crit review is available.
 - I subscribe to AbTopicManager and each topic's announcer so the list refreshes automatically on status changes and topic add/remove events.
 - I fire a user-supplied block when a topic is selected, allowing AbBrowserPresenter to update AbChatPresenter.
 
@@ -14,6 +14,7 @@ Collaborators:
 - AbSettingsPresenter: I open it via #openOnTopic: for per-topic settings editing.
 - AbNewTopicDialog / AbSetAgentDialog / AbPackagePrefixesDialog: I open these dialogs for the relevant context-menu actions.
 - AbChatPresenter: Indirectly notified via the onTopicSelected callback set by AbBrowserPresenter.
+- AbWebBrowserOpener: I open the crit review URL in the web browser when a review starts.
 
 Public API and Key Messages:
 - #onTopicSelected: - Register a one-argument block called when the user selects a topic.
@@ -24,6 +25,7 @@ Internal Representation:
 - sortMode - Symbol (#title or #lastUpdated) controlling current sort order.
 - onTopicSelectedBlock - Optional callback block; receives the selected AbTopic.
 - topicManager - The AbTopicManager to use; defaults lazily to AbTopicManager default.
+- webBrowserOpener - The object answering #open: for URLs; defaults lazily to AbWebBrowserOpener.
 "
 Class {
 	#name : 'AbTopicListPresenter',
@@ -34,11 +36,24 @@ Class {
 		'newTopicButton',
 		'onTopicSelectedBlock',
 		'sortMode',
-		'topicManager'
+		'topicManager',
+		'webBrowserOpener'
 	],
 	#category : 'AgenticBrowser-UI',
 	#package : 'AgenticBrowser-UI'
 }
+
+{ #category : 'private' }
+AbTopicListPresenter >> addReviewByCritGroupTo: aMenu for: aTopic [
+
+	aTopic critDaemon isAvailable ifFalse: [ ^ self ].
+	aMenu addGroup: [ :group |
+		group addItem: [ :item |
+			item
+				name: 'Review by crit';
+				enabled: aTopic critDaemon refusalReasonOnStart isNil;
+				action: [ self onReviewByCritRequest ] ] ]
+]
 
 { #category : 'private' }
 AbTopicListPresenter >> applyUpdatedExternalPackagesFor: aTopic [
@@ -59,10 +74,10 @@ AbTopicListPresenter >> applyUpdatedExternalPackagesFor: aTopic [
 { #category : 'private' }
 AbTopicListPresenter >> buildTopicContextMenu [
 
-	| topic notWorking |
-	topic := topicList selectedItem.
+	| topic notWorking menu |
+	topic := self topicList selectedItem.
 	notWorking := topic isWorking not.
-	^ SpMenuPresenter new
+	menu := SpMenuPresenter new
 		  addGroup: [ :group |
 			  group
 				  addItem: [ :item | item name: 'Rename...'; action: [ self onRenameTopicRequest ] ];
@@ -80,9 +95,10 @@ AbTopicListPresenter >> buildTopicContextMenu [
 				  addItem: [ :item | item name: 'Set Target Packages...'; enabled: notWorking; action: [ self onSetTargetPackagesRequest ] ];
 				  addItem: [ :item | item name: 'Apply Updated External Packages'; enabled: notWorking; action: [ self onApplyUpdatedExternalPackagesRequest ] ] ];
 		  addGroup: [ :group |
-			  group
-				  addItem: [ :item | item name: 'Edit Settings...'; action: [ self onEditSettingsRequest ] ] ];
-		  yourself
+			  group addItem: [ :item | item name: 'Edit Settings...'; action: [ self onEditSettingsRequest ] ] ];
+		  yourself.
+	self addReviewByCritGroupTo: menu for: topic.
+	^ menu
 ]
 
 { #category : 'initialization' }
@@ -164,6 +180,24 @@ AbTopicListPresenter >> onEditSettingsRequest [
 	topic := self topicList selectedItem.
 	topic ifNil: [ ^ self ].
 	AbSettingsPresenter openOnTopic: topic
+]
+
+{ #category : 'private' }
+AbTopicListPresenter >> onReviewByCritRequest [
+
+	| topic |
+	topic := self topicList selectedItem.
+	topic ifNil: [ ^ self ].
+	[ topic critDaemon
+		startReviewForHost: 'localhost'
+		ifStarted: [ :url :port | self openCritReviewUrl: url ]
+		ifFailed: [ :reason | ] ] forkAt: Processor userBackgroundPriority
+]
+
+{ #category : 'private' }
+AbTopicListPresenter >> openCritReviewUrl: urlString [
+
+	self webBrowserOpener open: urlString
 ]
 
 { #category : 'private' }
@@ -256,8 +290,8 @@ AbTopicListPresenter >> onRenameTopicRequest [
 				    request: 'New title:'
 				    initialAnswer: selectedTopic title
 				    title: 'Rename Topic'.
-	(newTitle isNil or: [ newTitle trimmed isEmpty ]) ifTrue: [ ^ self ].
-	selectedTopic title: newTitle trimmed.
+	(newTitle isNil or: [ newTitle trimBoth isEmpty ]) ifTrue: [ ^ self ].
+	selectedTopic title: newTitle trimBoth.
 	self defer: [ self refresh ]
 ]
 
@@ -290,8 +324,8 @@ AbTopicListPresenter >> onSetGoalRequest [
 		request: 'Goal (completion condition):'
 		initialAnswer: (topic topicGoal ifNotNil: [ :g | g description ] ifNil: [ '' ])
 		title: 'Set Goal'.
-	(goalText isNil or: [ goalText trimmed isEmpty ]) ifTrue: [ ^ self ].
-	topic goalDescription: goalText trimmed
+	(goalText isNil or: [ goalText trimBoth isEmpty ]) ifTrue: [ ^ self ].
+	topic goalDescription: goalText trimBoth
 ]
 
 { #category : 'private' }
@@ -317,9 +351,9 @@ AbTopicListPresenter >> onSetWorkingDirectoryRequest [
 		request: 'Working directory path:'
 		initialAnswer: topic workingDirectoryPath
 		title: 'Set Working Directory'.
-	(directoryPath isNil or: [ directoryPath trimmed isEmpty ])
+	(directoryPath isNil or: [ directoryPath trimBoth isEmpty ])
 		ifTrue: [ ^ self ].
-	topic workingDirectoryPath: directoryPath trimmed.
+	topic workingDirectoryPath: directoryPath trimBoth.
 	self defer: [ self refresh ]
 ]
 
@@ -472,4 +506,16 @@ AbTopicListPresenter >> unsubscribeFromTopicManager [
 	self topicManager topicsDo: [ :t |
 		t announcer unsubscribe: self ].
 	self topicManager announcer unsubscribe: self
+]
+
+{ #category : 'accessing' }
+AbTopicListPresenter >> webBrowserOpener [
+
+	^ webBrowserOpener ifNil: [ webBrowserOpener := AbWebBrowserOpener new ]
+]
+
+{ #category : 'accessing' }
+AbTopicListPresenter >> webBrowserOpener: anOpener [
+
+	webBrowserOpener := anOpener
 ]

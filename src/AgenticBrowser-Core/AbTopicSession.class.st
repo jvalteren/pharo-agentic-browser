@@ -12,6 +12,7 @@ Collaborators:
 - AbTopic: I am owned by a topic; I delegate back to it for working directory setup and as handler target.
 - AbTopicHandler: I set it as the ACP client handler to receive agent callbacks.
 - AbMcpServersLoader: I call it to resolve the MCP server list on every connect.
+- AbCritDaemon: I cache one for my topic, since crit review presumes an agent session.
 - ACPClient: I create and manage the low-level ACP protocol client.
 
 Public API and Key Messages:
@@ -20,6 +21,7 @@ Public API and Key Messages:
 - #setConfigOptionId:value: - Send a config change to the agent (e.g. model/mode selection).
 - #updateConfigOptions: - Synchronize config options and announce model/mode changes.
 - #sessionId - The persistent ACP session identifier used for resume/load.
+- #critDaemon - Lazily created AbCritDaemon for my topic.
 
 Internal Representation:
 - client - The ACPClient instance; nil when not connected (excluded from Fuel serialization).
@@ -27,11 +29,13 @@ Internal Representation:
 - availableCommands - Slash commands reported by the agent; persisted so the UI dropdown is populated before the next session connects.
 - configOptions - OrderedCollection of ACPConfigOption from the agent; drives the UI droplists.
 - currentModel / currentMode - Cached current values; suppress no-op announcements.
+- critDaemon - Cached AbCritDaemon (excluded from Fuel serialization).
 
 Implementation Points:
 - client is excluded from Fuel serialization (fuelIgnoredInstanceVariableNames) and is recreated on next #ensureConnected.
 - If the agent does not support MCP server registration, MCP servers are silently skipped and a system message is inserted into the topic.
 - Session resume falls back to load, then to new session creation, based on agent capability flags.
+- A plain image save/restart (not a Fuel reload) keeps client non-nil but pointing at a dead subprocess and its closed pipes; #disconnect always clears it even if the underlying client disconnect fails, so a fresh #ensureConnected can reconnect. AbTopicManager triggers this on image resume via its class-side #startUp:.
 "
 Class {
 	#name : 'AbTopicSession',
@@ -43,7 +47,8 @@ Class {
 		'availableCommands',
 		'currentModel',
 		'currentMode',
-		'configOptions'
+		'configOptions',
+		'critDaemon'
 	],
 	#category : 'AgenticBrowser-Core',
 	#package : 'AgenticBrowser-Core'
@@ -52,7 +57,7 @@ Class {
 { #category : 'fuel' }
 AbTopicSession class >> fuelIgnoredInstanceVariableNames [
 
-	^ #( 'client' )
+	^ #( 'client' 'critDaemon' )
 ]
 
 { #category : 'instance creation' }
@@ -66,6 +71,18 @@ AbTopicSession class >> on: anAbTopic [
 { #category : 'accessing' }
 AbTopicSession >> announcer [
 	^ self topic announcer
+]
+
+{ #category : 'accessing' }
+AbTopicSession >> critDaemon [
+
+	^ critDaemon ifNil: [ critDaemon := AbCritDaemon forTopic: self topic ]
+]
+
+{ #category : 'accessing' }
+AbTopicSession >> critDaemon: anAbCritDaemon [
+
+	critDaemon := anAbCritDaemon
 ]
 
 { #category : 'accessing' }
@@ -114,10 +131,20 @@ AbTopicSession >> currentMode: aString [
 	currentMode := aString
 ]
 
+{ #category : 'testing' }
+AbTopicSession >> isConnected [
+	^ self client notNil
+]
+
 { #category : 'operations' }
 AbTopicSession >> disconnect [
+	"The client's subprocess pipes may already be dead (e.g. after a Pharo image restart
+	while the topic stayed open), so a graceful protocol disconnect can itself fail.
+	Always clear the client so the next #ensureConnected reconnects instead of reusing it."
 
-	self client ifNotNil: [ self client disconnect ].
+	[ self client ifNotNil: [ self client disconnect ] ]
+		on: Error
+		do: [ :e | "ignore: the connection is already unusable" ].
 	self initClientDerived
 ]
 

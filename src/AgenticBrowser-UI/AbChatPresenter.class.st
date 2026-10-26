@@ -436,8 +436,10 @@ AbChatPresenter >> onDenyButtonClicked [
 AbChatPresenter >> onMessageAdded: anAbMessage [
 
 	self messagesPresenter addOrUpdateMessage: anAbMessage.
-	anAbMessage isApprovalRequest ifTrue: [
-		self enterApprovalMode: anAbMessage ]
+	(anAbMessage isApprovalRequest and: [ anAbMessage approvalOption isNil ])
+		ifTrue: [ self enterApprovalMode: anAbMessage ].
+	(anAbMessage == self pendingApprovalMessage and: [
+		 anAbMessage approvalOption notNil ]) ifTrue: [ self exitApprovalMode ]
 ]
 
 { #category : 'event handling' }
@@ -495,7 +497,7 @@ AbChatPresenter >> onSendButtonClicked [
 
 	| text promptText mentions resources screenshots fileAttachments |
 	self currentTopic ifNil: [ ^ self ].
-	text := self normalInputPresenter inputText trimmed.
+	text := self normalInputPresenter inputText trimBoth.
 	text ifEmpty: [ ^ self ].
 	self normalInputPresenter clearInput.
 	promptText := (self isFirstMessageInTopic and: [

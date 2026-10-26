@@ -252,6 +252,169 @@ AbTopicListPresenterTest >> testUnsubscribeFromTopicManagerAlsoUnsubscribesFromC
 	self deny: presenter topicManager == newManager
 ]
 
+{ #category : 'private' }
+AbTopicListPresenterTest >> selectTopicInList [
+
+	| mock |
+	mock := MockObject new.
+	mock on: #selectedItem verify: [ topic ].
+	presenter instVarNamed: 'topicList' put: mock
+]
+
+{ #category : 'private' }
+AbTopicListPresenterTest >> reviewByCritItem [
+
+	| items |
+	items := presenter buildTopicContextMenu menuGroups flatCollect: [ :group | group menuItems ].
+	^ items detect: [ :item | item name = 'Review by crit' ] ifNone: [ nil ]
+]
+
+{ #category : 'private' }
+AbTopicListPresenterTest >> prepareCritDirectoryWithoutConfig [
+
+	| dir |
+	dir := FileLocator temp / ('ab-menu-crit-' , UUID new asString36).
+	dir ensureCreateDirectory.
+	(dir / '.git') ensureCreateDirectory.
+	topic workingDirectoryPath: dir fullName.
+	^ dir
+]
+
+{ #category : 'private' }
+AbTopicListPresenterTest >> prepareCritDirectory [
+
+	| dir |
+	dir := self prepareCritDirectoryWithoutConfig.
+	(AbCritConfigFile in: dir) writePort: 9080.
+	^ dir
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testOpenCritReviewUrlOpensWebBrowser [
+
+	| opener |
+	opener := MockObject new.
+	opener on: #open: with: 'http://localhost:9080/'.
+	presenter webBrowserOpener: opener.
+	presenter openCritReviewUrl: 'http://localhost:9080/'.
+	opener verifyIn: self
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testWebBrowserOpenerDefaultsToAbWebBrowserOpener [
+
+	self assert: presenter webBrowserOpener class equals: AbWebBrowserOpener
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsEnabledWithoutCritConfig [
+
+	| dir item |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	dir := self prepareCritDirectoryWithoutConfig.
+	topic stateMachine
+		handleEvent: #promptSent;
+		handleEvent: #turnEnded.
+	self selectTopicInList.
+	[
+		item := self reviewByCritItem.
+		self assert: item notNil.
+		self assert: item isEnabled
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsAbsentWhenUnavailable [
+
+	| dir groups |
+	AbSettings initialize.
+	dir := self prepareCritDirectory.
+	AbSettings default useCrit: false.
+	self selectTopicInList.
+	[
+		groups := presenter buildTopicContextMenu menuGroups.
+		self deny: ((groups flatCollect: [ :group | group menuItems ]) anySatisfy: [ :item | item name = 'Review by crit' ]).
+		self deny: (groups anySatisfy: [ :group | group menuItems isEmpty ])
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsInItsOwnGroup [
+
+	| dir critGroup |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	dir := self prepareCritDirectory.
+	self selectTopicInList.
+	[
+		critGroup := presenter buildTopicContextMenu menuGroups detect: [ :group |
+			group menuItems anySatisfy: [ :item | item name = 'Review by crit' ] ].
+		self assert: critGroup menuItems size equals: 1
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsDisabledWhileTopicIsInitial [
+
+	| dir item |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	dir := self prepareCritDirectory.
+	self selectTopicInList.
+	[
+		item := self reviewByCritItem.
+		self assert: item notNil.
+		self deny: item isEnabled
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsEnabledWhenTopicIsEndTurn [
+
+	| dir item |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	dir := self prepareCritDirectory.
+	topic stateMachine
+		handleEvent: #promptSent;
+		handleEvent: #turnEnded.
+	self selectTopicInList.
+	[
+		item := self reviewByCritItem.
+		self assert: item notNil.
+		self assert: item isEnabled
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
+{ #category : 'tests' }
+AbTopicListPresenterTest >> testReviewByCritIsDisabledWhileTopicIsWorking [
+
+	| dir item |
+	AbSettings initialize.
+	AbSettings default useCrit: true.
+	dir := self prepareCritDirectory.
+	topic stateMachine handleEvent: #promptSent.
+	self selectTopicInList.
+	[
+		item := self reviewByCritItem.
+		self assert: item notNil.
+		self deny: item isEnabled
+	] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings initialize ]
+]
+
 { #category : 'accessing' }
 AbTopicListPresenterTest >> topic: anAbTopic [
 

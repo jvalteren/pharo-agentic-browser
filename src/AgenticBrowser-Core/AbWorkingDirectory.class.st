@@ -109,7 +109,7 @@ AbWorkingDirectory >> exportClassNamed: aClassName in: aPackageName [
 	cls := Smalltalk globals at: aClassName asSymbol.
 	classFile := self sourcePath / aPackageName / (aClassName , '.class.st').
 	classFile parent ensureCreateDirectory.
-	classFile writeStreamDo: [ :stream | TonelWriter exportClass: cls on: stream ]
+	classFile safeWriteStreamDo: [ :stream | TonelWriter exportClass: cls on: stream ]
 ]
 
 { #category : 'exporting' }

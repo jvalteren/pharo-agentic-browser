@@ -21,10 +21,11 @@ AbMcpServersLoader >> addSmalltalkInteropMcpTo: aDict [
 	server := ACPMcpServer new
 		name: 'smalltalk-interop';
 		command: 'uvx';
-		args: #( '--from' 'git+https://github.com/mumez/pharo-smalltalk-interop-mcp-server.git'
-			'pharo-smalltalk-interop-mcp-server' );
+		args: #( '--from' 'git+https://github.com/mumez/smalltalk-interop-mcp-server.git'
+			'smalltalk-interop-mcp-server' );
 		yourself.
-	server addEnvNamed: 'PHARO_SIS_PORT' value: '8086'.
+	"The MCP client reads SIS_PORT. It must match this image's interop port, which SisSettings takes from PHARO_SIS_PORT."
+	server addEnvNamed: 'SIS_PORT' value: SisSettings default port asString.
 	aDict at: server name put: server asDictionary
 ]
 

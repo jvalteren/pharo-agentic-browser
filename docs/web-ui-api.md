@@ -10,7 +10,7 @@ ws://<host>:<port>/ws/agentic-browser?token=<sessionId>
 - Default port: `8080`
 - No authentication required (LAN single-user).
 
-On connect the server subscribes the client to **all events for all topics** immediately. Every push event (`messageAdded`, `statusChanged`, `modelChanged`, `modeChanged`, `commandsChanged`, `topicAdded`, `topicRemoved`) is broadcast to all connected clients. The client uses `topicId` in each event to route it to the right view.
+On connect the server subscribes the client to **all events for all topics** immediately. Every push event (`messageAdded`, `statusChanged`, `modelChanged`, `modeChanged`, `commandsChanged`, `goalChanged`, `topicAdded`, `topicRemoved`) is broadcast to all connected clients. The client uses `topicId` in each event to route it to the right view.
 
 **Client registration requirements (send immediately after connect):**
 - `{ "type": "register", "address": "serverEventPushed" }` — required to receive all server-initiated push events (`messageAdded`, `statusChanged`, etc.)
@@ -147,17 +147,58 @@ Creates a new topic.
 ```json
 {
   "title": "My Topic",
-  "agentArguments": ["claude-code"]
+  "agentArguments": ["claude-code"],
+  "workingDirectory": "my-folder",
+  "checkExistingDirectory": false
 }
 ```
 
 - `title` — display name (defaults to `"Untitled"` if omitted)
 - `agentArguments` — array of agent CLI arguments (optional)
+- `workingDirectory` — optional. A plain relative folder name (no path separators, no `..`, not
+  an absolute path, and not one of the reserved names `topic-template`/`screenshots`) naming a
+  subfolder of the agentic-browser root to use as the topic's working directory. See
+  `request /workingDirectories/list` below for discovering existing folder names.
+  - If omitted entirely, today's default behavior is unchanged: the server auto-assigns a
+    `<safeTopicName>-<uuid8>` folder.
+  - If the named folder already exists and `checkExistingDirectory` is `false`/omitted, it is
+    reused as-is (its contents are preserved).
+  - If the named folder does not exist, it is created and seeded from the topic-template.
+  - If the named folder already exists and `checkExistingDirectory` is `true`, the request fails
+    with `failureCode: 10009` instead of reusing it (see Error Codes).
+- `checkExistingDirectory` — optional boolean, defaults to `false`. Only meaningful together with
+  `workingDirectory`; set it to `true` when the caller intends to create a brand-new folder and
+  wants a name collision reported as an error rather than silently reused.
 
 **Reply body:**
 ```json
 { "topicId": "abc123" }
 ```
+
+---
+
+### `request /workingDirectories/list`
+
+Returns the subfolders available under the agentic-browser root that can be used as a topic's
+`workingDirectory` when creating a topic (see `request /topics/create` above). The reserved
+folders `topic-template` and `screenshots` are excluded.
+
+**Request body:** _(empty)_
+
+**Reply body:**
+```json
+{
+  "workingDirectories": [
+    { "name": "my-folder", "createdAt": "2026-09-01T12:00:00+09:00", "modifiedAt": "2026-09-05T08:30:00+09:00" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Folder name — pass this as `workingDirectory` to `/topics/create` to reuse it |
+| `createdAt` | string | Folder creation timestamp |
+| `modifiedAt` | string | Folder last-modified timestamp |
 
 ---
 
@@ -299,7 +340,11 @@ Returns the topic's current settings. Only the fields meaningful in the WebUI co
 {
   "settings": {
     "useCommandOnGoalSet": false,
-    "goalSetCommand": "/goal"
+    "goalSetCommand": "/goal",
+    "useDefaultMcpServers": true,
+    "aiPermissionWaitTimeoutSeconds": 1800,
+    "aiPermissionTimeoutOption": "reject_once",
+    "useStBuddySkillOnInitialPrompt": true
   }
 }
 ```
@@ -308,6 +353,10 @@ Returns the topic's current settings. Only the fields meaningful in the WebUI co
 |---|---|---|
 | `useCommandOnGoalSet` | boolean | When `true`, the goal notification prompt is prefixed with `goalSetCommand` |
 | `goalSetCommand` | string | The command prefix prepended to the goal notification prompt (default: `"/goal"`) |
+| `useDefaultMcpServers` | boolean | When `true`, built-in Smalltalk MCP servers are merged into `mcp.json` (default: `true`) |
+| `aiPermissionWaitTimeoutSeconds` | integer | Seconds to wait for a human response to an AI permission request (default: `1800`) |
+| `aiPermissionTimeoutOption` | string | Auto-response on timeout: `"allow_once"`, `"allow_always"`, or `"reject_once"` (default: `"reject_once"`) |
+| `useStBuddySkillOnInitialPrompt` | boolean | When `true`, the initial prompt is prefixed with the `st-buddy` skill instruction (default: `true`) |
 
 **Errors:** `10001` if the `topicId` does not exist.
 
@@ -334,6 +383,10 @@ Updates per-topic settings. Only the fields present in the `settings` body are a
 |---|---|---|
 | `useCommandOnGoalSet` | boolean | Enable/disable command prefix on goal notification |
 | `goalSetCommand` | string | Command prefix to prepend (e.g. `"/goal"`, `"/mygoal"`) |
+| `useDefaultMcpServers` | boolean | Enable/disable merging built-in Smalltalk MCP servers |
+| `aiPermissionWaitTimeoutSeconds` | integer | AI permission request wait timeout in seconds |
+| `aiPermissionTimeoutOption` | string | Auto-response on timeout (`"allow_once"`, `"allow_always"`, `"reject_once"`) |
+| `useStBuddySkillOnInitialPrompt` | boolean | Enable/disable the `st-buddy` skill prefix on the initial prompt |
 
 **Errors:** `10001` if the `topicId` does not exist.
 
@@ -348,6 +401,31 @@ Saves all topics to disk (`AbTopicManager save`). This is an application-level o
 **Reply body:** `{ "ok": true }`
 
 Returns error `10006` if the save operation fails.
+
+---
+
+### `request /crit/start`
+
+Starts a crit diff review for the topic's working directory, or reuses the daemon already running there. Before it starts a new daemon, the server picks the port. It keeps the port in `.crit.config.json` unless another topic's running crit holds it. Otherwise it writes the lowest free port in `critPortRange`, and creates the file if it is missing. It also adds AgenticBrowser's `on_finish_unresolved` / `on_finish_approved` hooks to that file, unless the file already defines its own (see the README section "Code Review with crit"). The reply comes right after validation passes; it does not wait for crit to start. The result is pushed later to this connection only.
+
+**Request body:**
+```json
+{ "topicId": "abc123", "host": "192.168.1.10" }
+```
+
+`host` is the browser's hostname. The review URL is `http://<host>:<port>/`.
+
+**Reply body:** `{ "ok": true }`
+
+Validation errors are returned as `err` with the request's `correlationId`, and no reply is sent:
+
+- unknown `topicId`: `10001`
+- crit review unavailable, or the topic status is `initial`: `10011` with message `Crit review not available: <reason>`
+- invalid `host` (empty, or characters outside letters, digits, `.`, `-`, `:`): `10012` with message `Invalid crit review host: <host>`
+
+`<reason>` is one of `useCrit is false`, `working directory has no .git`, or `topic status is initial`.
+
+After the reply, the server pushes one of `critReviewStarted` or `critReviewFailed` to the requesting connection. It also posts a system message, which other clients see through `messageAdded`.
 
 ---
 
@@ -411,10 +489,10 @@ Push events arrive in two ways depending on the event type:
 
 | Delivery | Message type | Events |
 |----------|-------------|--------|
-| `send` to address `"serverEventPushed"` | `send` | `messageAdded`, `statusChanged`, `modelChanged`, `modeChanged`, `commandsChanged`, `topicAdded`, `topicRemoved` |
+| `send` to address `"serverEventPushed"` | `send` | `messageAdded`, `statusChanged`, `modelChanged`, `modeChanged`, `commandsChanged`, `goalChanged`, `topicAdded`, `topicRemoved` |
 | `publish` to address `"topicsUpdated"` | `publish` | `topicsUpdated` |
 
-For `send`-type events, the `body` always contains an `event` field. All `send`-type events are broadcast to every connected client that has registered for `"serverEventPushed"`; the client uses `topicId` to route them.
+For `send`-type events, the `body` always contains an `event` field. `messageAdded`, `statusChanged`, `modelChanged`, `modeChanged`, `commandsChanged`, `goalChanged`, `topicAdded`, and `topicRemoved` are broadcast to every connected client that has registered for `"serverEventPushed"`; the client uses `topicId` to route them. `critReviewStarted` and `critReviewFailed` are sent only to the connection that called `/crit/start`, because the URL contains that browser's host.
 
 For `publish`-type events, only clients that sent `{ "type": "register", "address": "topicsUpdated" }` receive them.
 
@@ -474,6 +552,18 @@ Use `statusChanged` with `status: "endTurn"` to detect when the agent finishes a
 }
 ```
 
+### `goalChanged` — goal description changed for a topic
+
+```json
+{
+  "event": "goalChanged",
+  "topicId": "abc123",
+  "goal": "Implement the login feature"
+}
+```
+
+Fired whenever a topic's goal is set, regardless of the trigger (web UI `/topic/setGoal`, spec UI, or a script). Use this to keep the goal display in sync even when the goal is set outside the web UI.
+
 ### `topicAdded` — a new topic was created
 
 ```json
@@ -491,6 +581,41 @@ Use `statusChanged` with `status: "endTurn"` to detect when the agent finishes a
   "topicId": "abc123"
 }
 ```
+
+### `critReviewStarted` — crit is ready for this client
+
+Sent only to the connection that called `/crit/start`.
+
+```json
+{
+  "event": "critReviewStarted",
+  "topicId": "abc123",
+  "port": 9080,
+  "url": "http://192.168.1.10:9080/"
+}
+```
+
+### `critReviewFailed` — crit did not start
+
+Sent only to the connection that called `/crit/start`. The same reason is also posted as a system message.
+
+```json
+{
+  "event": "critReviewFailed",
+  "topicId": "abc123",
+  "reason": "crit status failed (is crit on PATH?)"
+}
+```
+
+`reason` is one of:
+
+- `crit status failed (is crit on PATH?)`
+- `invalid critPortRange: <range>`
+- `crit port range exhausted: <low>-<high>`, when every port in `critPortRange` is held by another topic's running crit
+- `crit did not start within 10 seconds on port <port> (the port may be in use by another process)`
+- the message of an error raised while spawning crit
+
+The review control stays enabled, so the user can retry.
 
 ---
 
@@ -545,7 +670,8 @@ Sent by the server after any operation that modifies topic metadata without addi
   "currentModel": "claude-sonnet-4-6",
   "currentMode": "auto",
   "lastUpdated": "2026-06-11T10:00:00+09:00",
-  "workingDirectoryPath": "/home/user/pharo130/agentic-browser/my-topic-abc12345"
+  "workingDirectoryPath": "/home/user/pharo130/agentic-browser/my-topic-abc12345",
+  "critReviewAvailable": false
 }
 ```
 
@@ -561,6 +687,7 @@ Sent by the server after any operation that modifies topic metadata without addi
 | `currentMode` | string | Active mode identifier (empty string if not set) |
 | `lastUpdated` | string | Timestamp string (offset-based ISO 8601) |
 | `workingDirectoryPath` | string | Absolute path to the topic's working directory on the server |
+| `critReviewAvailable` | boolean | True when `useCrit` is on and the working directory has `.git`. `.crit.config.json` is not required; `/crit/start` assigns a port. The web UI hides the review control when this is false, and disables it when `status` is `initial`. |
 
 **Topic statuses:** `initial` | `working` | `waitingForHuman` | `endTurn` | `goalAchieved`
 
@@ -670,6 +797,10 @@ Errors on `request` messages include a `correlationId` matching the original req
 | `10006` | `Failed to save: <reason>` | `/app/save` encountered an error |
 | `10007` | `No model config available for: <topicId>` | `/topic/setModel` called before agent connected and sent model options |
 | `10008` | `No mode config available for: <topicId>` | `/topic/setMode` called before agent connected and sent mode options |
+| `10009` | `Working directory already exists: <workingDirectory>` | `/topics/create` called with `checkExistingDirectory: true` and a `workingDirectory` folder that already exists |
+| `10010` | `Invalid working directory name: <workingDirectory>` | `/topics/create`'s `workingDirectory` is empty, `.`, contains `/`, `\`, or `..`, is an absolute path, or is a reserved name (`topic-template`, `screenshots`) |
+| `10011` | `Crit review not available: <reason>` | `/crit/start` when crit review is unavailable, or the topic status is `initial` |
+| `10012` | `Invalid crit review host: <host>` | `/crit/start` when `host` is empty or contains characters outside letters, digits, `.`, `-`, `:` |
 
 ---
 

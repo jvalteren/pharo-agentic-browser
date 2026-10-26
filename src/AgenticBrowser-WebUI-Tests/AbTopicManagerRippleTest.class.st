@@ -26,6 +26,7 @@ AbTopicManagerRippleTest >> setUp [
 AbTopicManagerRippleTest >> tearDown [
 
 	ripple unregistered.
+	AbStubCritDaemon resetScript.
 	super tearDown
 ]
 
@@ -68,6 +69,19 @@ AbTopicManagerRippleTest >> dispatch: aMessage [
 	(RpMessageDispatcher message: aMessage socket: mockSocket handler: handler) dispatch
 ]
 
+{ #category : 'private' }
+AbTopicManagerRippleTest >> withTempWorkingDirectoriesRoot: aBlock [
+
+	"Nested under the real agentic-browser root (not FileLocator temp) so that
+	 AbTopicTemplateDirectory>>copyTo:'s own root guard still allows template seeding
+	 into folders created under this temp root during a test."
+	| tempRoot |
+	tempRoot := AbSettings defaultAgenticBrowserRootDirectory / ('ab-wd-root-' , UUID new asString36).
+	tempRoot ensureCreateDirectory.
+	ripple workingDirectoriesRootDirectory: tempRoot.
+	[ aBlock value: tempRoot ] ensure: [ tempRoot deleteAll ]
+]
+
 { #category : 'tests' }
 AbTopicManagerRippleTest >> testTopicAsJsonContainsRequiredFields [
 
@@ -80,7 +94,8 @@ AbTopicManagerRippleTest >> testTopicAsJsonContainsRequiredFields [
 	self assert: (json includesKey: 'agentArguments').
 	self assert: (json includesKey: 'currentModel').
 	self assert: (json includesKey: 'currentMode').
-	self assert: (json includesKey: 'lastUpdated')
+	self assert: (json includesKey: 'lastUpdated').
+	self assert: (json at: 'critReviewAvailable') equals: false
 ]
 
 { #category : 'tests' }
@@ -218,6 +233,215 @@ AbTopicManagerRippleTest >> testCreateTopicAddsToManagerAndRepliesWithTopicId [
 	self assert: topicId isString.
 	self assert: topicId isNotEmpty.
 	self assert: (AbTopicManager forTest at: topicId) isNotNil
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testListWorkingDirectoriesRepliesWithEmptyWhenRootHasNoFolders [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| msg reply |
+		msg := self requestMessage: '/workingDirectories/list' body: nil.
+		ripple handleRequest: msg.
+		reply := mockSocket lastReply.
+		self assert: ((reply at: 'body') at: 'workingDirectories') isEmpty ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testListWorkingDirectoriesRepliesWithFolders [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| msg reply names entry |
+		(tempRoot / 'my-project') ensureCreateDirectory.
+		(tempRoot / 'another-project') ensureCreateDirectory.
+		msg := self requestMessage: '/workingDirectories/list' body: nil.
+		ripple handleRequest: msg.
+		reply := mockSocket lastReply.
+		names := ((reply at: 'body') at: 'workingDirectories') collect: [ :d | d at: 'name' ].
+		self assert: names asSet equals: #( 'my-project' 'another-project' ) asSet.
+		entry := ((reply at: 'body') at: 'workingDirectories') first.
+		self assert: (entry includesKey: 'createdAt').
+		self assert: (entry includesKey: 'modifiedAt') ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testListWorkingDirectoriesExcludesReservedFolders [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| msg reply names |
+		(tempRoot / 'topic-template') ensureCreateDirectory.
+		(tempRoot / 'screenshots') ensureCreateDirectory.
+		(tempRoot / 'real-project') ensureCreateDirectory.
+		msg := self requestMessage: '/workingDirectories/list' body: nil.
+		ripple handleRequest: msg.
+		reply := mockSocket lastReply.
+		names := ((reply at: 'body') at: 'workingDirectories') collect: [ :d | d at: 'name' ].
+		self deny: (names includes: 'topic-template').
+		self deny: (names includes: 'screenshots').
+		self assert: (names includes: 'real-project') ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicWithNewWorkingDirectoryCreatesAndSeedsFromTemplate [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| dirName msg reply topicId topic workingDirectoryPath |
+		dirName := 'ab-test-new-wd-' , UUID new asString36.
+		msg := self requestMessage: '/topics/create'
+			       body: (Dictionary new
+					        at: 'title' put: 'New WD Topic';
+					        at: 'workingDirectory' put: dirName;
+					        at: 'checkExistingDirectory' put: true;
+					        yourself).
+		ripple handleRequest: msg.
+		reply := mockSocket lastReply.
+		topicId := (reply at: 'body') at: 'topicId'.
+		topic := AbTopicManager forTest at: topicId.
+		workingDirectoryPath := tempRoot / dirName.
+		self assert: topic workingDirectoryPath equals: workingDirectoryPath fullName.
+		self assert: workingDirectoryPath exists.
+		AbTopicTemplateDirectory default path children do: [ :templateFile |
+			self assert: (workingDirectoryPath / templateFile basename) exists ] ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicWithExistingWorkingDirectoryReusesFolderWhenCheckExistingDirectoryAbsent [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| dirName preExisting markerFile msg reply topicId topic |
+		dirName := 'ab-test-existing-wd-' , UUID new asString36.
+		preExisting := tempRoot / dirName.
+		preExisting ensureCreateDirectory.
+		markerFile := preExisting / 'marker.txt'.
+		markerFile writeStreamDo: [ :s | s nextPutAll: 'keep-me' ].
+		msg := self requestMessage: '/topics/create'
+			       body: (Dictionary new
+					        at: 'title' put: 'Reuse WD Topic';
+					        at: 'workingDirectory' put: dirName;
+					        yourself).
+		ripple handleRequest: msg.
+		reply := mockSocket lastReply.
+		topicId := (reply at: 'body') at: 'topicId'.
+		topic := AbTopicManager forTest at: topicId.
+		self assert: topic workingDirectoryPath equals: preExisting fullName.
+		self assert: markerFile exists
+			description: 'existing folder contents must be preserved when reusing' ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicWithExistingWorkingDirectoryAndCheckExistingDirectoryTrueSignalsCollisionError [
+
+	self withTempWorkingDirectoriesRoot: [ :tempRoot |
+		| dirName preExisting msg |
+		dirName := 'ab-test-collide-wd-' , UUID new asString36.
+		preExisting := tempRoot / dirName.
+		preExisting ensureCreateDirectory.
+		msg := self requestMessage: '/topics/create'
+			       body: (Dictionary new
+					        at: 'title' put: 'Collide WD Topic';
+					        at: 'workingDirectory' put: dirName;
+					        at: 'checkExistingDirectory' put: true;
+					        yourself).
+		[ ripple handleRequest: msg ]
+			on: RpError
+			do: [ :e | self assert: e code equals: 10009 ] ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForPathTraversalWorkingDirectory [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: '../foo';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForAbsolutePathWorkingDirectory [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: '/tmp/evil-workingdir';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForSlashInWorkingDirectoryName [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: 'foo/bar';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForReservedWorkingDirectoryNameTopicTemplate [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: 'topic-template';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForReservedWorkingDirectoryNameScreenshots [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: 'screenshots';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForEmptyWorkingDirectoryName [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: '';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testCreateTopicSignalsErrorForDotWorkingDirectoryName [
+
+	| msg |
+	msg := self requestMessage: '/topics/create'
+		       body: (Dictionary new
+				        at: 'title' put: 'Bad WD Topic';
+				        at: 'workingDirectory' put: '.';
+				        yourself).
+	[ ripple handleRequest: msg ]
+		on: RpError
+		do: [ :e | self assert: e code equals: 10010 ]
 ]
 
 { #category : 'tests' }
@@ -807,6 +1031,26 @@ AbTopicManagerRippleTest >> testSetGoalPublishesTopicsUpdated [
 ]
 
 { #category : 'tests' }
+AbTopicManagerRippleTest >> testGoalChangedPushesEventWhenGoalSetDirectlyOnTopic [
+
+	| topic pushes |
+	topic := self newMockTopic: 'Scripted Goal Topic'.
+	AbTopicManager forTest addTopic: topic.
+	mockSocket reset.
+	topic goalDescription: 'Implement feature X'.
+	pushes := mockSocket sentMessages select: [ :m |
+		          (m at: 'type') = 'send'
+		          and: [ ((m at: 'body') at: 'event') = 'goalChanged' ] ].
+	self assert: pushes size equals: 1.
+	self
+		assert: ((pushes first at: 'body') at: 'topicId')
+		equals: topic topicId.
+	self
+		assert: ((pushes first at: 'body') at: 'goal')
+		equals: 'Implement feature X'
+]
+
+{ #category : 'tests' }
 AbTopicManagerRippleTest >> testDeleteTopicSignalsErrorWhenBusy [
 
 	| topic msg |
@@ -901,7 +1145,11 @@ AbTopicManagerRippleTest >> testGetSettingsRepliesWithDefaultValues [
 	self assert: (settings includesKey: 'useCommandOnGoalSet').
 	self assert: (settings includesKey: 'goalSetCommand').
 	self assert: (settings at: 'useCommandOnGoalSet') equals: false.
-	self assert: (settings at: 'goalSetCommand') equals: '/goal'
+	self assert: (settings at: 'goalSetCommand') equals: '/goal'.
+	self assert: (settings at: 'useDefaultMcpServers') equals: true.
+	self assert: (settings at: 'aiPermissionWaitTimeoutSeconds') equals: 1800.
+	self assert: (settings at: 'aiPermissionTimeoutOption') equals: AbConstants rejectOnce.
+	self assert: (settings at: 'useStBuddySkillOnInitialPrompt') equals: true
 ]
 
 { #category : 'tests' }
@@ -916,13 +1164,21 @@ AbTopicManagerRippleTest >> testSetSettingsUpdatesTopicSettings [
 			        at: 'settings' put: (Dictionary new
 				         at: 'useCommandOnGoalSet' put: true;
 				         at: 'goalSetCommand' put: '/mygoal';
+				         at: 'useDefaultMcpServers' put: false;
+				         at: 'aiPermissionWaitTimeoutSeconds' put: 60;
+				         at: 'aiPermissionTimeoutOption' put: 'allow_once';
+				         at: 'useStBuddySkillOnInitialPrompt' put: false;
 				         yourself);
 			        yourself).
 	ripple handleRequest: msg.
 	reply := mockSocket lastReply.
 	self assert: ((reply at: 'body') at: 'ok').
 	self assert: topic settings useCommandOnGoalSet equals: true.
-	self assert: topic settings goalSetCommand equals: '/mygoal'
+	self assert: topic settings goalSetCommand equals: '/mygoal'.
+	self assert: topic settings useDefaultMcpServers equals: false.
+	self assert: topic settings aiPermissionWaitTimeoutSeconds equals: 60.
+	self assert: topic settings aiPermissionTimeoutOption equals: AbConstants allowOnce.
+	self assert: topic settings useStBuddySkillOnInitialPrompt equals: false
 ]
 
 { #category : 'tests' }
@@ -1000,4 +1256,208 @@ AbTopicManagerRippleTest >> testUnregisteredUnsubscribesFromClassAnnouncer [
 	AbTopicManager announcer
 		announce: (AbTopicManagerLoaded topicManager: newManager).
 	self deny: ripple topicManager == newManager
+]
+
+{ #category : 'private' }
+AbTopicManagerRippleTest >> withReadyCritTopicDo: aBlock [
+
+	self withCritTopicWithoutConfigDo: [ :topic |
+		(AbCritConfigFile in: topic workingDirectory path) writePort: 9080.
+		aBlock value: topic ]
+]
+
+{ #category : 'private' }
+AbTopicManagerRippleTest >> withCritTopicWithoutConfigDo: aBlock [
+
+	| dir topic previousUse previousRange |
+	previousUse := AbSettings default useCrit.
+	previousRange := AbSettings default critPortRange.
+	AbSettings default useCrit: true.
+	dir := FileLocator temp / ('ab-ripple-crit-' , UUID new asString36).
+	dir ensureCreateDirectory.
+	(dir / '.git') ensureCreateDirectory.
+	topic := self newTopic: 'crit'.
+	topic workingDirectoryPath: dir fullName.
+	topic stateMachine
+		handleEvent: #promptSent;
+		handleEvent: #turnEnded.
+	ripple topicManager addTopic: topic.
+	[ aBlock value: topic ] ensure: [
+		dir exists ifTrue: [ dir deleteAll ].
+		AbSettings default useCrit: previousUse.
+		AbSettings default critPortRange: previousRange.
+		AbStubCritDaemon resetScript ]
+]
+
+{ #category : 'private' }
+AbTopicManagerRippleTest >> critPushesNamed: anEvent [
+
+	^ mockSocket sentMessages select: [ :each |
+		  (each at: 'type') = 'send' and: [ ((each at: 'body') at: 'event') = anEvent ] ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testTopicJsonCritReviewAvailableWhenReady [
+
+	self withReadyCritTopicDo: [ :topic |
+		self assert: ((ripple topicJson: topic) at: 'critReviewAvailable') ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testTopicJsonCritReviewAvailableWithoutCritConfig [
+
+	self withCritTopicWithoutConfigDo: [ :topic |
+		self assert: ((ripple topicJson: topic) at: 'critReviewAvailable') ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritWithoutCritConfigWritesPortAndPushesStartedUrl [
+
+	| finished stub msg pushes |
+	finished := Semaphore new.
+	self withCritTopicWithoutConfigDo: [ :topic |
+		AbStubCritDaemon finishedSemaphore: finished.
+		stub := AbStubCritDaemon forTopic: topic.
+		stub statusReplies
+			add: '{"daemon":{"running":false}}';
+			add: '{"daemon":{"running":true}}'.
+		topic session critDaemon: stub.
+		msg := self requestMessage: '/crit/start' body: (Dictionary new
+			at: 'topicId' put: topic topicId;
+			at: 'host' put: 'localhost';
+			yourself).
+		self dispatch: msg.
+		self assert: ((mockSocket lastReply at: 'body') at: 'ok').
+		self assert: (finished waitTimeoutSeconds: 2) equals: false.
+		pushes := self critPushesNamed: 'critReviewStarted'.
+		self assert: pushes size equals: 1.
+		self assert: ((pushes first at: 'body') at: 'port') equals: 9080.
+		self assert: (AbCritConfigFile in: topic workingDirectory path) port equals: 9080 ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritSignalsTopicNotFound [
+
+	| msg |
+	msg := self requestMessage: '/crit/start' body: (Dictionary new
+		at: 'topicId' put: 'missing';
+		at: 'host' put: 'localhost';
+		yourself).
+	self dispatch: msg.
+	self assert: (mockSocket lastError at: 'error') code equals: 10001.
+	self assert: (mockSocket lastError at: 'correlationId') equals: 'corr-1'.
+	self assert: (mockSocket sentMessages noneSatisfy: [ :each | (each at: 'type') = 'reply' ])
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritSignalsInvalidHost [
+
+	| topic msg error previousUse |
+	previousUse := AbSettings default useCrit.
+	AbSettings default useCrit: true.
+	topic := self newTopic: 'bad-host'.
+	ripple topicManager addTopic: topic.
+	msg := self requestMessage: '/crit/start' body: (Dictionary new
+		at: 'topicId' put: topic topicId;
+		at: 'host' put: 'evil' , String lf , 'host';
+		yourself).
+	[ self dispatch: msg.
+	error := mockSocket lastError at: 'error'.
+	self assert: error code equals: 10012.
+	self assert: (error messageText beginsWith: 'Invalid crit review host:') ]
+		ensure: [ AbSettings default useCrit: previousUse ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritSignalsUnavailable [
+
+	| topic msg error previousUse |
+	previousUse := AbSettings default useCrit.
+	AbSettings default useCrit: true.
+	topic := self newTopic: 'no-git'.
+	ripple topicManager addTopic: topic.
+	msg := self requestMessage: '/crit/start' body: (Dictionary new
+		at: 'topicId' put: topic topicId;
+		at: 'host' put: 'localhost';
+		yourself).
+	[ self dispatch: msg.
+	error := mockSocket lastError at: 'error'.
+	self assert: error code equals: 10011.
+	self assert: error messageText equals: 'Crit review not available: working directory has no .git' ]
+		ensure: [ AbSettings default useCrit: previousUse ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritSignalsInitialStatus [
+
+	| dir topic msg error previousUse |
+	previousUse := AbSettings default useCrit.
+	AbSettings default useCrit: true.
+	dir := FileLocator temp / ('ab-ripple-crit-' , UUID new asString36).
+	dir ensureCreateDirectory.
+	(dir / '.git') ensureCreateDirectory.
+	topic := self newTopic: 'initial'.
+	topic workingDirectoryPath: dir fullName.
+	(AbCritConfigFile in: dir) writePort: 9080.
+	ripple topicManager addTopic: topic.
+	msg := self requestMessage: '/crit/start' body: (Dictionary new
+		at: 'topicId' put: topic topicId;
+		at: 'host' put: 'localhost';
+		yourself).
+	[ self dispatch: msg.
+	error := mockSocket lastError at: 'error'.
+	self assert: error code equals: 10011.
+	self assert: error messageText equals: 'Crit review not available: topic status is initial' ]
+		ensure: [
+			dir exists ifTrue: [ dir deleteAll ].
+			AbSettings default useCrit: previousUse ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritPushesStartedUrl [
+
+	| finished msg pushes body |
+	finished := Semaphore new.
+	self withReadyCritTopicDo: [ :topic |
+		AbStubCritDaemon defaultStatusStdout: '{"daemon":{"running":true}}'.
+		AbStubCritDaemon finishedSemaphore: finished.
+		topic session critDaemon: (AbStubCritDaemon forTopic: topic).
+		msg := self requestMessage: '/crit/start' body: (Dictionary new
+			at: 'topicId' put: topic topicId;
+			at: 'host' put: '192.168.1.10';
+			yourself).
+		self dispatch: msg.
+		self assert: (mockSocket sentMessages noneSatisfy: [ :each | (each at: 'type') = 'err' ]).
+		self assert: (mockSocket lastReply at: 'correlationId') equals: 'corr-1'.
+		self assert: ((mockSocket lastReply at: 'body') at: 'ok').
+		self assert: (finished waitTimeoutSeconds: 2) equals: false.
+		pushes := self critPushesNamed: 'critReviewStarted'.
+		self assert: pushes size equals: 1.
+		body := pushes first at: 'body'.
+		self assert: (body at: 'topicId') equals: topic topicId.
+		self assert: (body at: 'port') equals: 9080.
+		self assert: (body at: 'url') equals: 'http://192.168.1.10:9080/'.
+		self assert: topic messages last text equals: 'Crit review: http://192.168.1.10:9080/ (crit asks once to trust this project''s hooks when you first press Finish)' ]
+]
+
+{ #category : 'tests' }
+AbTopicManagerRippleTest >> testStartCritPushesFailureWithoutChangingStatus [
+
+	| finished msg pushes |
+	finished := Semaphore new.
+	self withReadyCritTopicDo: [ :topic |
+		AbStubCritDaemon defaultStatusStdout: 'not-json'.
+		AbStubCritDaemon finishedSemaphore: finished.
+		topic session critDaemon: (AbStubCritDaemon forTopic: topic).
+		msg := self requestMessage: '/crit/start' body: (Dictionary new
+			at: 'topicId' put: topic topicId;
+			at: 'host' put: '192.168.1.10';
+			yourself).
+		self dispatch: msg.
+		self assert: (finished waitTimeoutSeconds: 2) equals: false.
+		pushes := self critPushesNamed: 'critReviewFailed'.
+		self assert: pushes size equals: 1.
+		self assert: ((pushes first at: 'body') at: 'reason') equals: 'crit status failed (is crit on PATH?)'.
+		self assert: ((pushes first at: 'body') at: 'topicId') equals: topic topicId.
+		self assert: topic isEndTurn ]
 ]

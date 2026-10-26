@@ -1,6 +1,9 @@
 Class {
 	#name : 'AbTestCase',
 	#superclass : 'TestCase',
+	#instVars : [
+		'originalAnnouncer'
+	],
 	#category : 'AgenticBrowser-Tests',
 	#package : 'AgenticBrowser-Tests'
 }
@@ -8,7 +11,11 @@ Class {
 { #category : 'running' }
 AbTestCase >> setUp [
 
-	AbTopicManager forTest: AbTopicManager new
+	"Swap in a private announcer so AbTopicManagerLoaded announcements in tests do not switch open topic lists or Web UI ripples to a throwaway manager."
+	self originalAnnouncer: AbTopicManager announcer.
+	AbTopicManager announcer: Announcer new.
+	AbTopicManager forTest: AbTopicManager new.
+	AbCritConfigFile topicManager: AbTopicManager forTest
 ]
 
 { #category : 'running' }
@@ -20,7 +27,21 @@ AbTestCase >> tearDown [
 		(dir basename beginsWith: 'ab-test-') ifTrue: [
 			dir exists ifTrue: [ dir deleteAll ] ] ].
 	AbTopicManager forTest: nil.
+	AbCritConfigFile topicManager: nil.
+	AbTopicManager announcer: self originalAnnouncer.
 	self cleanupTestDirectories
+]
+
+{ #category : 'accessing' }
+AbTestCase >> originalAnnouncer [
+
+	^ originalAnnouncer
+]
+
+{ #category : 'accessing' }
+AbTestCase >> originalAnnouncer: anAnnouncer [
+
+	originalAnnouncer := anAnnouncer
 ]
 
 { #category : 'running' }
@@ -76,6 +97,25 @@ AbTestCase >> modelOptionWithCurrentValue: aString [
 					 at: 'name' put: 'claude-opus-4-7';
 					 yourself) }.
 	^ modelOption
+]
+
+{ #category : 'private' }
+AbTestCase >> withTempDirectoryDo: aBlock [
+
+	| root |
+	root := FileLocator temp / ('ab-test-' , UUID new asString36).
+	root ensureCreateDirectory.
+	^ [ aBlock value: root ] ensure: [
+		root exists ifTrue: [ root deleteAll ] ]
+]
+
+{ #category : 'private' }
+AbTestCase >> writeLongerFile: aFileReference marked: aMarker [
+
+	aFileReference parent ensureCreateDirectory.
+	aFileReference writeStreamDo: [ :stream |
+		stream nextPutAll: (String new: 40000 withAll: $X).
+		stream nextPutAll: aMarker ]
 ]
 
 { #category : 'private' }
